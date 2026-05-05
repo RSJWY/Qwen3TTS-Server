@@ -25,6 +25,26 @@ from .config import (
 )
 
 
+def _extract_sample_rate(raw: object, fallback: int = DEFAULT_SAMPLE_RATE) -> int:
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, list) and raw:
+        val = raw[-1]
+        if isinstance(val, (int, float)):
+            return int(val)
+        item_fn = getattr(val, "item", None)
+        if callable(item_fn):
+            result = item_fn()
+            if isinstance(result, (int, float)):
+                return int(result)
+    item_fn = getattr(raw, "item", None)
+    if callable(item_fn):
+        result = item_fn()
+        if isinstance(result, (int, float)):
+            return int(result)
+    return fallback
+
+
 class VLLMEngine:
     """vLLM-Omni based TTS engine with true streaming generation.
 
@@ -222,12 +242,7 @@ class VLLMEngine:
                         }
                 else:
                     # Final output
-                    sr_raw = mm.get("sr", sr)
-                    if isinstance(sr_raw, list) and sr_raw:
-                        val = sr_raw[-1]
-                        sr = int(val.item()) if hasattr(val, "item") else int(val)
-                    elif hasattr(sr_raw, "item"):
-                        sr = int(sr_raw.item())  # type: ignore[union-attr]
+                    sr = _extract_sample_rate(mm.get("sr"), sr)
 
                     if audio_chunks:
                         audio_tensor = torch.cat(audio_chunks, dim=-1)
