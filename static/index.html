@@ -131,6 +131,17 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
   color: var(--text-muted);
 }
 .model-card .card-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.model-card .source-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 8px;
+  outline: none;
+  appearance: none;
+  cursor: pointer;
+}
 .dl-progress {
   height: 3px;
   background: var(--border);
@@ -537,12 +548,22 @@ function renderModelCards(models) {
     } else if (m.exists) {
       statusHTML = `<span class="card-status incomplete">⚠ 不完整 (缺 ${m.missing_files?.length || 0} 文件)</span>`;
       actionsHTML = `
+        <select class="source-select" id="dl-source-${m.model_type}">
+          <option value="modelscope">ModelScope</option>
+          <option value="huggingface">HuggingFace</option>
+        </select>
         <button class="btn-dl" onclick="downloadModel('${m.model_type}')">继续下载</button>
         <button class="btn-del" onclick="deleteModel('${m.model_type}')">删除</button>
       `;
     } else {
       statusHTML = `<span class="card-status missing">✗ 未下载</span>`;
-      actionsHTML = `<button class="btn-dl" onclick="downloadModel('${m.model_type}')">下载</button>`;
+      actionsHTML = `
+        <select class="source-select" id="dl-source-${m.model_type}">
+          <option value="modelscope">ModelScope</option>
+          <option value="huggingface">HuggingFace</option>
+        </select>
+        <button class="btn-dl" onclick="downloadModel('${m.model_type}')">下载</button>
+      `;
     }
 
     card.innerHTML = `
@@ -568,7 +589,9 @@ function renderModelCards(models) {
 
 async function downloadModel(modelType) {
   try {
-    const res = await fetch(`/v1/models/${modelType}/download`, { method: 'POST' });
+    const sourceEl = $(`dl-source-${modelType}`);
+    const source = sourceEl ? sourceEl.value : 'modelscope';
+    const res = await fetch(`/v1/models/${modelType}/download?source=${source}`, { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     
     // Update UI immediately to downloading state
@@ -670,7 +693,11 @@ function switchTab(tab) {
   document.querySelectorAll('nav button').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });
-  
+
+  const isModelManage = tab === 'model_manage';
+  $('btnGenerate').style.display = isModelManage ? 'none' : '';
+  $('btnCancel').style.display = isModelManage ? 'none' : '';
+
   if (tab === 'model_manage') {
     loadModelStatus();
   }

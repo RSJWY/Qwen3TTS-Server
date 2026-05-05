@@ -329,10 +329,12 @@ async def model_status(model_type: str):
 
 
 @app.post("/v1/models/{model_type}/download")
-async def model_download(model_type: str):
+async def model_download(model_type: str, source: str = "modelscope"):
     if model_type not in MODEL_IDS:
         raise HTTPException(status_code=404, detail=f"Unknown model type: {model_type}")
-    return get_model_manager().download_model(model_type)
+    if source not in ("modelscope", "huggingface", "auto"):
+        raise HTTPException(status_code=400, detail=f"Invalid source: {source}. Use modelscope, huggingface, or auto")
+    return get_model_manager().download_model(model_type, source=source)
 
 
 @app.post("/v1/models/{model_type}/cancel-download")

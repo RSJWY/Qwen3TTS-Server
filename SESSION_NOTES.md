@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-基于 vLLM-Omni 的 Qwen3-TTS 流式语音合成服务器。核心需求：用户已有同步版本的 Qwen3Audio 项目，需要改为流式输出，避免长时间等待。
+基于 vLLM-Omni 的 Qwen3-TTS 流式语音合成服务器。
 
 ## 技术决策
 
@@ -15,32 +15,40 @@
 1. **Stage 0 (Talker)**: AR 自回归生成 codec tokens，max_num_batched_tokens=512 实现低首包延迟
 2. **Stage 1 (Code2Wav)**: 将 codec tokens 转为 waveform，max_num_batched_tokens=65536 处理长序列
 
-### 通信协议选择
-- **WebSocket** 作为主要流式通道：二进制帧传 PCM（零开销），JSON 帧传控制消息
-- **SSE REST** 作为备选：base64 编码 PCM，兼容性更好
-- **非流式 REST** 作为简单接口：返回完整 WAV
+### 通信协议
+- **WebSocket** 主通道：二进制帧传 PCM（零开销），JSON 帧传控制消息
+- **SSE REST** 备选：base64 编码 PCM
+- **非流式 REST** 简单接口：返回完整 WAV
+
+### 模型下载策略
+- **下载源优先级**: ModelScope（国内快）→ HuggingFace（备选），支持用户手动选择
+- **本地优先**: `models/{model_type}/` 目录存在且完整 → 直接使用
+- **下载到项目目录**: 默认 `models/`，支持 `--models-dir` 自定义
+- **完整性校验**: 基于 `MODEL_ESSENTIAL_FILES`（10个必要文件）验证
 
 ## 项目结构
 
 ```
 Qwen3-TTS-Server/
-├── run.py                  # CLI 入口 (argparse + uvicorn)
-├── requirements.txt        # 运行时依赖
-├── README.md               # 完整文档
-├── .gitignore              # 包含 .venv/
+├── run.py              # CLI 入口 (argparse + uvicorn)
+├── download_models.py  # 独立模型下载脚本
+├── requirements.txt    # 运行时依赖
+├── .gitignore          # 包含 .venv/, models/
 ├── server/
 │   ├── __init__.py
-│   ├── __main__.py         # python -m server 入口
-│   ├── config.py           # 音色/语言/模型常量
-│   ├── main.py             # FastAPI 应用（所有端点）
-│   └── vllm_engine.py      # vLLM-Omni 引擎封装
+│   ├── __main__.py     # python -m server 入口
+│   ├── config.py       # 常量：音色/语言/模型ID/文件清单/中文描述
+│   ├── main.py         # FastAPI 应用（TTS + 模型管理端点）
+│   ├── model_manager.py # 模型管理核心（检查/下载/删除/取消）
+│   └── vllm_engine.py  # vLLM-Omni 引擎封装
 ├── static/
-│   └── index.html          # 前端单页应用
-└── .venv/                  # Python 3.12 虚拟环境（已创建，待安装依赖）
+│   └── index.html      # 前端单页应用（中文界面，4个Tab）
+└── .venv/              # Python 3.12 虚拟环境
 ```
 
 ## API 端点
 
+### TTS 语音合成
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/ws/tts` | WebSocket | 流式 TTS + 取消支持 |
@@ -52,80 +60,48 @@ Qwen3-TTS-Server/
 | `/v1/audio/models` | GET | 模型 ID 列表 |
 | `/v1/audio/status` | GET | 引擎状态 |
 
-## WebSocket 协议
+### 模型管理
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/models/status` | GET | 检查所有模型完整性 |
+| `/v1/models/{type}/status` | GET | 检查单个模型 |
+| `/v1/models/{type}/download` | POST | 开始下载（支持 source 参数） |
+| `/v1/models/{type}/cancel-download` | POST | 取消下载 |
+| `/v1/models/{type}` | DELETE | 删除模型 |
+| `/v1/models/{type}/download-status` | GET | 查询下载进度 |
 
-### 客户端 → 服务端
-- `{"type":"generate","text":"...","language":"Chinese","speaker":"Vivian",...}` — 开始生成
-- `{"type":"cancel","request_id":"..."}` — 取消生成
+## 模型信息
 
-### 服务端 → 客户端
-- JSON `{"type":"session.start","request_id":"..."}` — 会话开始
-- 二进制帧 — PCM int16le 24000Hz mono 音频块
-- JSON `{"type":"audio.done","total_duration":3.5,"sample_rate":24000}` — 生成完成
-- JSON `{"type":"error","message":"..."}` — 错误
+三种模型变体共享相同文件结构：
 
-## 前端特性
+| 模型类型 | HF/ModelScope ID | 中文名 | 说明 |
+|----------|-----------------|--------|------|
+| custom_voice | Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice | 预设音色 | 9种精选音色，支持风格指令 |
+| voice_design | Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign | 语音设计 | 通过自然语言描述设计音色 |
+| base | Qwen/Qwen3-TTS-12Hz-1.7B-Base | 声音克隆 | 3秒参考音频即可克隆 |
 
-- 3 个 Tab：CustomVoice / VoiceDesign / VoiceClone
-- Web Audio API 实时播放 PCM 流
-- 取消按钮 + Escape 键取消
-- 进度条（基于已接收采样数估算）
-- 生成完成后构建 WAV 供下载/回放
-- Void Space 调色板（GitHub 风格暗色主题）
-
-## 引擎核心逻辑
-
-### 取消机制
-- 每个 `generate_stream` 调用创建 `asyncio.Event` 存入 `_cancel_events[request_id]`
-- 每次从 `AsyncOmni.generate()` 迭代时检查 `cancel_event.is_set()`
-- 客户端发 cancel 消息 → 服务端调 `engine.request_cancel(request_id)` → set event
-
-### 模型切换
-- `switch_model()` 先 unload 当前 AsyncOmni，再加载新模型
-- 三种模型类型对应三个 HuggingFace repo：
-  - `custom_voice`: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-  - `voice_design`: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
-  - `base`: Qwen/Qwen3-TTS-12Hz-1.7B-Base
-
-### prompt_token_ids 估计
-- Talker 阶段替换所有输入 embedding，但要求 placeholder 长度匹配
-- 调用 `Qwen3TTSTalkerForConditionalGeneration.estimate_prompt_len_from_additional_information()`
-- fallback: 基于文本长度粗估 `(len(text) + len(instruct)) * 1.5 + 256`
-
-## Git 历史
-
-```
-c7c56e1 fix: resolve basedpyright reportArgumentType in _extract_sample_rate
-520a4b9 docs: add README, fix type annotations, remove unused imports
-12d6f0e feat: init Qwen3-TTS streaming server with vLLM-Omni backend
-```
+### 必要文件（完整性校验用）
+`config.json`, `model.safetensors`, `tokenizer_config.json`, `merges.txt`, `vocab.json`, `preprocessor_config.json`, `generation_config.json`, `speech_tokenizer/config.json`, `speech_tokenizer/model.safetensors`, `speech_tokenizer/preprocessor_config.json`
 
 ## 环境状态
 
 | 环境 | Python | 包 | 用途 |
 |------|--------|-----|------|
-| System | 3.12.3 | 无 pip/无项目包 | 系统级 |
-| Pyenv | 3.10.12 | basedpyright, pip, setuptools | LSP 类型检查 |
-| Project .venv | 3.12.3 | vllm 0.18.1, vllm-omni 0.18.0, torch 2.10.0, transformers 4.57.6 | **已安装** |
+| System | 3.12.3 | 无 pip | 系统级 |
+| Pyenv | 3.10.12 | basedpyright, pip | LSP 类型检查 |
+| Project .venv | 3.12.3 | vllm 0.18.1, vllm-omni 0.18.0, torch 2.10.0, transformers 4.57.6 | 已安装 |
 
-### 版本兼容性说明
-
-- **vllm-omni 0.18.0 仅兼容 vllm 0.18.x**。vllm 0.19+ 移除了 `vllm.inputs.data` 模块（`TokensPrompt` 等类移至 `vllm.inputs` 直接导出），导致 `vllm_omni.patch` 和其他 5 个文件导入失败。
-- `requirements.txt` 已添加版本上限 pin：`vllm>=0.18.0,<0.19.0`
-- 当前安装：vllm 0.18.1 + vllm-omni 0.18.0 + torch 2.10.0 + CUDA 12.8
+### 版本兼容性
+- **vllm-omni 0.18.0 仅兼容 vllm 0.18.x**。vllm 0.19+ 移除了 `vllm.inputs.data`
+- `requirements.txt` 已 pin：`vllm>=0.18.0,<0.19.0`
 
 ## 待完成
 
-1. ~~**安装项目依赖到 .venv**~~ — ✅ 已完成 (vllm 0.18.1, vllm-omni 0.18.0)
-
-2. **实际 GPU 测试** — 当前代码基于 vLLM-Omni 文档和源码编写，需在有 GPU 的环境验证
-
-3. **基于pyright LSP 诊断** — 剩余 13 个 `reportMissingImports` 错误在安装依赖后应已消失
+1. **实际 GPU 测试** — 代码基于 vLLM-Omni 文档编写，需 GPU 环境验证
+2. **模型下载测试** — 验证 ModelScope/HuggingFace 下载是否产生完整可用的模型文件
 
 ## 参考资源
 
 - [Qwen3-TTS 官方仓库](https://github.com/QwenLM/Qwen3-TTS/)
 - [vLLM-Omni 仓库](https://github.com/vllm-project/vllm-omni)
 - [Qwen3Audio 参考项目](https://github.com/RSJWY/Qwen3Audio) — 同步版本参考
-- vLLM-Omni 部署配置: `vllm_omni/deploy/qwen3_tts.yaml`
-- vLLM-Omni 流式客户端示例: `examples/online_serving/text_to_speech/qwen3_tts/streaming_speech_client.py`

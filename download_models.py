@@ -64,7 +64,7 @@ def delete_model(models_dir: str, model_type: str) -> None:
         print(f"模型不存在: {local_path}")
 
 
-def download_models(models_dir: str, model_types: list[str]) -> None:
+def download_models(models_dir: str, model_types: list[str], source: str = "modelscope") -> None:
     mgr = ModelManager(models_dir=models_dir)
 
     for mt in model_types:
@@ -83,7 +83,7 @@ def download_models(models_dir: str, model_types: list[str]) -> None:
         if info["exists"] and info["missing_files"]:
             print(f"  缺失文件: {', '.join(info['missing_files'])}")
 
-        result = mgr.download_model(mt)
+        result = mgr.download_model(mt, source=source)
         if result["status"] == "already_complete":
             print(f"[{mt}] 已完整")
             continue
@@ -115,6 +115,12 @@ def main() -> None:
         help="要下载的模型类型（custom_voice, voice_design, base）",
     )
     parser.add_argument(
+        "--source",
+        choices=["modelscope", "huggingface", "auto"],
+        default="modelscope",
+        help="下载源（默认: modelscope）",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         dest="list_models",
@@ -141,7 +147,7 @@ def main() -> None:
         delete_model(models_dir, args.delete)
     else:
         model_types = args.model_type or list(MODEL_IDS.keys())
-        download_models(models_dir, model_types)
+        download_models(models_dir, model_types, args.source)
 
 
 if __name__ == "__main__":
