@@ -243,10 +243,10 @@ class VLLMEngine:
 
         audio_chunks: list[torch.Tensor] = []
         sr = self.sample_rate
+        last_mm: dict[str, Any] = {}
 
         try:
             async for stage_output in self._omni.generate(prompt, request_id=request_id):
-                # Check cancellation
                 if cancel_event.is_set():
                     yield {"type": "error", "message": "Generation cancelled"}
                     return
@@ -255,6 +255,7 @@ class VLLMEngine:
                 if not mm:
                     continue
 
+                last_mm = mm
                 audio = mm.get("audio")
                 if audio is None:
                     continue
@@ -264,25 +265,27 @@ class VLLMEngine:
                 else:
                     audio_chunks.append(audio)
 
-                if not stage_output.finished:
-                    combined = torch.cat(audio_chunks, dim=-1)
-                    audio_np = combined.float().cpu().numpy().flatten()
-                    yield {
-                        "type": "audio_chunk",
-                        "audio": audio_np,
-                        "sample_rate": sr,
-                    }
-                else:
-                    sr = _extract_sample_rate(mm.get("sr"), sr)
-                    audio_tensor = torch.cat(audio_chunks, dim=-1)
-                    audio_np = audio_tensor.float().cpu().numpy().flatten()
-                    total_duration = len(audio_np) / sr
-                    yield {
-                        "type": "audio_done",
-                        "audio": audio_np,
-                        "sample_rate": sr,
-                        "total_duration": total_duration,
-                    }
+                combined = torch.cat(audio_chunks, dim=-1)
+                audio_np = combined.float().cpu().numpy().flatten()
+                yield {
+                    "type": "audio_chunk",
+                    "audio": audio_np,
+                    "sample_rate": sr,
+                }
+
+            if audio_chunks:
+                sr = _extract_sample_rate(last_mm.get("sr"), sr)
+                audio_tensor = torch.cat(audio_chunks, dim=-1)
+                audio_np = audio_tensor.float().cpu().numpy().flatten()
+                total_duration = len(audio_np) / sr
+                yield {
+                    "type": "audio_done",
+                    "audio": audio_np,
+                    "sample_rate": sr,
+                    "total_duration": total_duration,
+                }
+            else:
+                yield {"type": "error", "message": "No audio generated"}
         except asyncio.CancelledError:
             yield {"type": "error", "message": "Generation cancelled"}
         except Exception as e:
