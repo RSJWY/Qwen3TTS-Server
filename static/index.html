@@ -52,8 +52,29 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
 .progress-bar .fill{height:100%;background:var(--primary);transition:width 200ms ease;width:0%}
 
 .player{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;display:flex;flex-direction:column;gap:12px}
-.player .label{font-size:12px;color:var(--text-muted)}
+.player-header{display:flex;justify-content:space-between;align-items:center}
+.player .label{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+.player .status-badge{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--border);color:var(--text-muted)}
+.player .status-badge.generating{background:rgba(210,153,34,0.15);color:#d29922}
+.player .status-badge.playing{background:rgba(88,166,255,0.15);color:var(--primary)}
+.player .status-badge.paused{background:rgba(139,148,158,0.15);color:var(--text-muted)}
 .player audio{width:100%;height:36px;border-radius:var(--radius)}
+
+.streaming-player{display:none;flex-direction:column;gap:12px;background:rgba(0,0,0,0.2);border-radius:var(--radius);padding:12px;border:1px solid rgba(255,255,255,0.05)}
+.streaming-player.active{display:flex}
+.streaming-controls{display:flex;align-items:center;gap:12px}
+.streaming-btn{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:6px 12px;font-size:12px;cursor:pointer;transition:all 150ms ease}
+.streaming-btn:hover{background:var(--border);color:var(--text-bright)}
+.streaming-btn.primary{background:var(--primary-dim);color:#fff;border-color:var(--primary-dim)}
+.streaming-btn.primary:hover{background:var(--primary)}
+.streaming-btn.danger{color:var(--accent)}
+.streaming-btn.danger:hover{background:rgba(247,129,102,0.1);border-color:var(--accent)}
+
+.streaming-progress-container{flex:1;display:flex;align-items:center;gap:12px}
+.streaming-time{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;min-width:45px}
+.streaming-track{flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;position:relative}
+.streaming-buffer{position:absolute;left:0;top:0;height:100%;background:rgba(88,166,255,0.2);transition:width 200ms linear}
+.streaming-playhead{position:absolute;left:0;top:0;height:100%;background:var(--primary);transition:width 100ms linear}
 .player .duration{font-size:12px;color:var(--text-muted);text-align:right}
 
 .log{margin-top:auto;padding-top:12px;border-top:1px solid var(--border)}
@@ -242,9 +263,30 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
       <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
 
       <div class="player" id="playerSection" style="display:none">
-        <div class="label">输出</div>
-        <audio id="audioPlayer" controls></audio>
-        <div class="duration" id="durationText"></div>
+        <div class="player-header">
+          <div class="label">
+            <span>输出</span>
+            <span class="status-badge" id="playerStatusBadge">播放中</span>
+          </div>
+          <div class="duration" id="durationText"></div>
+        </div>
+
+        <div class="streaming-player" id="streamingPlayer">
+          <div class="streaming-controls">
+            <button class="streaming-btn primary" id="btnStreamPause">暂停</button>
+            <button class="streaming-btn danger" id="btnStreamStop">停止</button>
+            
+            <div class="streaming-progress-container">
+              <span class="streaming-time" id="streamTimeDisplay">0.0s</span>
+              <div class="streaming-track">
+                <div class="streaming-buffer" id="streamBufferBar" style="width:0%"></div>
+                <div class="streaming-playhead" id="streamPlayheadBar" style="width:0%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <audio id="audioPlayer" controls style="display:none"></audio>
       </div>
 
       <div class="log">
@@ -262,8 +304,14 @@ let currentRequestId = null;
 let isGenerating = false;
 let audioCtx = null;
 let pcmBuffers = [];
+let activeSourceNodes = new Set();
 let playStartTime = 0;
 let nextPlayOffset = 0;
+let isStreamPaused = false;
+let streamTimerId = null;
+let streamTotalDuration = 0;
+let totalSamplesReceived = 0;
+let streamStopped = false;
 let currentTab = 'custom_voice';
 let speakers = [];
 let languages = [];
@@ -331,6 +379,7 @@ function playPcmChunk(int16Array) {
     float32[i] = int16Array[i] / 32768;
   }
   pcmBuffers.push(float32);
+  totalSamplesReceived += float32.length;
 
   const buffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
   buffer.getChannelData(0).set(float32);
@@ -338,22 +387,160 @@ function playPcmChunk(int16Array) {
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
   source.connect(audioCtx.destination);
+  
+  activeSourceNodes.add(source);
+  source.onended = () => activeSourceNodes.delete(source);
 
-  const now = audioCtx.currentTime;
+    const now = audioCtx.currentTime;
+
+    // First chunk initializes playStartTime
+    if (nextPlayOffset === 0) {
+      playStartTime = now + 0.05; // slight buffer
+      nextPlayOffset = playStartTime;
+
+      // Transition from "生成中" to "播放中"
+      updatePlayerState('playing');
+      $('streamingPlayer').classList.add('active');
+      $('btnStreamPause').disabled = false;
+      $('btnStreamPause').textContent = '暂停';
+
+      if (!streamTimerId) {
+        streamTimerId = requestAnimationFrame(updateStreamProgress);
+      }
+    }
+
   const startTime = Math.max(now, nextPlayOffset);
   source.start(startTime);
   nextPlayOffset = startTime + buffer.duration;
 }
 
-function resetPlayback() {
-  pcmBuffers = [];
-  nextPlayOffset = 0;
-  const player = $('audioPlayer');
-  player.src = '';
-  player.load();
-  $('playerSection').style.display = 'none';
-  $('durationText').textContent = '';
+  function resetPlayback() {
+    stopStreamingPlayback();
+    pcmBuffers = [];
+    nextPlayOffset = 0;
+    totalSamplesReceived = 0;
+    streamTotalDuration = 0;
+    isStreamPaused = false;
+    streamStopped = false;
+
+    const player = $('audioPlayer');
+    player.src = '';
+    player.style.display = 'none';
+    player.load();
+
+    $('streamingPlayer').classList.remove('active');
+    $('btnStreamPause').disabled = true;
+    $('btnStreamPause').textContent = '暂停';
+    $('durationText').textContent = '';
+
+    updatePlayerState('generating');
+    $('streamBufferBar').style.width = '0%';
+    $('streamPlayheadBar').style.width = '0%';
+    $('streamTimeDisplay').textContent = '0.0s';
+
+    // Show player section during generation so the user sees "生成中"
+    $('playerSection').style.display = 'flex';
+  }
+
+function updatePlayerState(state) {
+  const badge = $('playerStatusBadge');
+  badge.className = 'status-badge ' + state;
+  switch (state) {
+    case 'generating': badge.textContent = '生成中'; break;
+    case 'playing': badge.textContent = '播放中'; break;
+    case 'paused': badge.textContent = '暂停'; break;
+    case 'completed': badge.textContent = '已完成'; break;
+  }
 }
+
+  function stopStreamingPlayback() {
+    if (streamTimerId) {
+      cancelAnimationFrame(streamTimerId);
+      streamTimerId = null;
+    }
+
+    if (audioCtx) {
+      for (const source of activeSourceNodes) {
+        try { source.stop(); } catch (e) {}
+        try { source.disconnect(); } catch (e) {}
+      }
+      activeSourceNodes.clear();
+      // Reset scheduling offset so next generation starts fresh
+      nextPlayOffset = 0;
+      // If audioCtx was paused for streaming, resume it so it's ready for next use
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+  }
+
+  function updateStreamProgress() {
+    if (!audioCtx || streamStopped) return;
+
+    if (audioCtx.state === 'running') {
+      const elapsed = Math.max(0, audioCtx.currentTime - playStartTime);
+      $('streamTimeDisplay').textContent = elapsed.toFixed(1) + 's';
+
+      const bufferDuration = totalSamplesReceived / SAMPLE_RATE;
+      if (bufferDuration > 0) {
+        let playPercent = (elapsed / bufferDuration) * 100;
+        $('streamPlayheadBar').style.width = Math.min(100, playPercent) + '%';
+        $('streamBufferBar').style.width = '100%';
+      }
+    }
+
+    // Keep animating while generating or audio still playing
+    if (isGenerating || (audioCtx.state === 'running' && activeSourceNodes.size > 0)) {
+      streamTimerId = requestAnimationFrame(updateStreamProgress);
+    }
+  }
+
+  function toggleStreamPause() {
+    if (!audioCtx) return;
+    const btn = $('btnStreamPause');
+
+    if (audioCtx.state === 'running') {
+      audioCtx.suspend().then(() => {
+        isStreamPaused = true;
+        btn.textContent = '继续';
+        updatePlayerState('paused');
+      });
+    } else if (audioCtx.state === 'suspended') {
+      audioCtx.resume().then(() => {
+        isStreamPaused = false;
+        btn.textContent = '暂停';
+        updatePlayerState('playing');
+        // Restart progress animation if it stopped
+        if (!streamTimerId && !streamStopped) {
+          streamTimerId = requestAnimationFrame(updateStreamProgress);
+        }
+      });
+    }
+  }
+
+  function stopStream() {
+    streamStopped = true;
+    stopStreamingPlayback();
+    if (isGenerating) {
+      cancel();
+    } else {
+      // No generation running, just stop playback and show completed state
+      isStreamPaused = false;
+      $('btnStreamPause').disabled = true;
+      $('btnStreamPause').textContent = '暂停';
+      updatePlayerState('completed');
+
+      // Offer the WAV replay if we have buffers
+      if (pcmBuffers.length > 0) {
+        const wavUrl = buildWavFromBuffers();
+        const player = $('audioPlayer');
+        player.src = wavUrl;
+        $('streamingPlayer').classList.remove('active');
+        player.style.display = 'block';
+        $('durationText').textContent = (totalSamplesReceived / SAMPLE_RATE).toFixed(1) + '秒';
+      }
+    }
+  }
 
 function buildWavFromBuffers() {
   let totalLen = 0;
@@ -440,11 +627,27 @@ async function connectWS() {
       case 'audio.done':
         setGenerating(false);
         $('progressFill').style.width = '100%';
+
+        // Remember how far streaming got before we cut it
+        const streamElapsed = audioCtx ? Math.max(0, audioCtx.currentTime - playStartTime) : 0;
+
+        // Stop AudioContext playback to avoid double audio
+        stopStreamingPlayback();
+
         const wavUrl = buildWavFromBuffers();
         const player = $('audioPlayer');
         player.src = wavUrl;
-        $('playerSection').style.display = '';
+
+        // Switch UI to native player
+        $('streamingPlayer').classList.remove('active');
+        player.style.display = 'block';
+        updatePlayerState('completed');
         $('durationText').textContent = `${msg.total_duration.toFixed(1)}秒`;
+
+        // Auto-play the WAV from where streaming left off
+        player.currentTime = streamElapsed;
+        player.play().catch(() => {});
+
         log(`完成: ${msg.total_duration.toFixed(1)}秒, ${msg.chunks_sent} 个音频块`);
         break;
       case 'error':
@@ -772,9 +975,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('btnGenerate').addEventListener('click', generate);
   $('btnCancel').addEventListener('click', cancel);
+  $('btnStreamPause').addEventListener('click', toggleStreamPause);
+  $('btnStreamStop').addEventListener('click', stopStream);
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && isGenerating) cancel();
+    // Space to pause/resume streaming playback
+    if (e.code === 'Space' && !e.target.closest('textarea, input, select') && $('streamingPlayer').classList.contains('active')) {
+      e.preventDefault();
+      toggleStreamPause();
+    }
   });
 });
 </script>
