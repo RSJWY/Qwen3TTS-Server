@@ -260,13 +260,16 @@ class VLLMEngine:
                 if audio is None:
                     continue
 
+                new_chunks: list[torch.Tensor] = []
                 if isinstance(audio, list):
                     audio_chunks.extend(audio)
+                    new_chunks = audio
                 else:
                     audio_chunks.append(audio)
+                    new_chunks = [audio]
 
-                combined = torch.cat(audio_chunks, dim=-1)
-                audio_np = combined.float().cpu().numpy().flatten()
+                incremental = torch.cat(new_chunks, dim=-1)
+                audio_np = incremental.float().cpu().numpy().flatten()
                 yield {
                     "type": "audio_chunk",
                     "audio": audio_np,
