@@ -13,6 +13,7 @@ import torch
 
 # Must be set before importing vllm_omni
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+os.environ.setdefault("FLASHINFER_DISABLE_VERSION_CHECK", "1")
 
 from vllm_omni import AsyncOmni
 

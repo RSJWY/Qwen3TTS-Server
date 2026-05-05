@@ -98,6 +98,15 @@ Qwen3-TTS-Server/
 ## 已修复
 
 1. **AsyncOmni 初始化错误** — `from_cli_args` 不存在于 vllm-omni 0.18.0 的 `AsyncOmni`/`OmniBase` 类上。改为直接构造 `AsyncOmni(model=model_path, **kwargs)`。`OmniBase.__init__` 接受 `model: str` 和 `**kwargs`（`gpu_memory_utilization`, `stage_configs_path` 等），内部创建 `AsyncOmniEngine`。
+2. **FlashInfer 版本不匹配** — `flashinfer-cubin 0.6.8.post1` 与 `flashinfer-python 0.6.6` 不匹配，导致 Stage 0 (Talker) WorkerProc 崩溃。修复：`pip install flashinfer-cubin==0.6.6` 对齐版本，`requirements.txt` 新增 pin。同时添加 `FLASHINFER_DISABLE_VERSION_CHECK=1` 环境变量作为安全回退。
+3. **缺失系统依赖** — 安装 `sox`（音频处理）和 `python3.12-dev`（Triton kernel 编译需要 Python.h）。
+
+## 环境注意事项
+
+- **FlashInfer 版本必须匹配**：vllm 0.18.x 需要 `flashinfer-python==0.6.6` + `flashinfer-cubin==0.6.6`，参考 https://github.com/vllm-project/vllm-omni/issues/1946
+- **SoX**：Qwen3-TTS 音频加载需要 sox，必须系统安装 `apt install sox`
+- **python3.12-dev**：Triton kernel JIT 编译需要 Python.h，否则 SnakeBeta 激活函数回退到 eager 模式
+- **WSL 环境**：vLLM 自动检测 WSL 并设置 `pin_memory=False`
 
 ## 待完成
 

@@ -5,6 +5,13 @@
 # releases a compatible version.
 vllm>=0.18.0,<0.19.0
 vllm-omni>=0.18.0
+
+# FlashInfer — must pin matching versions for vllm 0.18.x
+# Mismatched flashinfer-python/flashinfer-cubin causes WorkerProc crash.
+# See: https://github.com/vllm-project/vllm-omni/issues/1946
+flashinfer-python==0.6.6
+flashinfer-cubin==0.6.6
+
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 websockets>=12.0

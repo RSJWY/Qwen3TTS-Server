@@ -2,6 +2,7 @@ import argparse
 import os
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+os.environ.setdefault("FLASHINFER_DISABLE_VERSION_CHECK", "1")
 
 
 def main():
