@@ -8,13 +8,13 @@ Provides:
   - GET /v1/audio/speakers, /v1/audio/languages, /v1/audio/status for metadata
 """
 
+from __future__ import annotations
+
 import os
-import asyncio
 import io
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import soundfile as sf
@@ -25,7 +25,6 @@ from pydantic import BaseModel
 
 from .config import (
     SPEAKERS,
-    LANGUAGES,
     VALID_LANGUAGES,
     MODEL_IDS,
     DEFAULT_SAMPLE_RATE,
@@ -39,7 +38,7 @@ logger = logging.getLogger("qwen3_tts_server")
 
 app = FastAPI(title="Qwen3-TTS Server", version="1.0.0")
 
-engine: Optional[VLLMEngine] = None
+engine: VLLMEngine | None = None
 
 active_requests: dict[str, WebSocket] = {}
 
@@ -47,10 +46,10 @@ active_requests: dict[str, WebSocket] = {}
 class TTSRequest(BaseModel):
     text: str
     language: str = "Chinese"
-    speaker: Optional[str] = "Vivian"
-    instruct: Optional[str] = None
-    ref_audio: Optional[str] = None
-    ref_text: Optional[str] = None
+    speaker: str | None = "Vivian"
+    instruct: str | None = None
+    ref_audio: str | None = None
+    ref_text: str | None = None
     x_vector_only_mode: bool = False
     max_new_tokens: int = 2048
     model_type: str = DEFAULT_MODEL_TYPE

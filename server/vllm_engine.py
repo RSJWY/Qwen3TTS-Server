@@ -1,11 +1,13 @@
 """vLLM-Omni TTS Engine for Qwen3-TTS streaming generation."""
 
+from __future__ import annotations
+
 import os
 import asyncio
 import uuid
-from typing import AsyncGenerator, Optional, Dict, Any
+from collections.abc import AsyncGenerator
+from typing import Any
 
-import numpy as np
 import torch
 
 # Must be set before importing vllm_omni
@@ -33,21 +35,21 @@ class VLLMEngine:
     def __init__(
         self,
         model_type: str = DEFAULT_MODEL_TYPE,
-        model_id: Optional[str] = None,
+        model_id: str | None = None,
         gpu_memory_utilization: float = DEFAULT_GPU_MEMORY_UTILIZATION,
         device: str = "cuda:0",
-        stage_configs_path: Optional[str] = None,
+        stage_configs_path: str | None = None,
     ):
-        self.model_type = model_type
-        self.model_id = model_id or MODEL_IDS.get(model_type, MODEL_IDS[DEFAULT_MODEL_TYPE])
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.device = device
-        self.stage_configs_path = stage_configs_path
-        self.sample_rate = DEFAULT_SAMPLE_RATE
+        self.model_type: str = model_type
+        self.model_id: str = model_id or MODEL_IDS.get(model_type, MODEL_IDS[DEFAULT_MODEL_TYPE])
+        self.gpu_memory_utilization: float = gpu_memory_utilization
+        self.device: str = device
+        self.stage_configs_path: str | None = stage_configs_path
+        self.sample_rate: int = DEFAULT_SAMPLE_RATE
 
-        self._omni: Optional[AsyncOmni] = None
-        self._loading = False
-        self._cancel_events: Dict[str, asyncio.Event] = {}
+        self._omni: AsyncOmni | None = None
+        self._loading: bool = False
+        self._cancel_events: dict[str, asyncio.Event] = {}
 
     async def load(self) -> None:
         """Load the AsyncOmni model."""
@@ -57,7 +59,7 @@ class VLLMEngine:
             return
         self._loading = True
         try:
-            kwargs: Dict[str, Any] = {
+            kwargs: dict[str, Any] = {
                 "model": self.model_id,
                 "gpu_memory_utilization": self.gpu_memory_utilization,
             }
@@ -81,7 +83,7 @@ class VLLMEngine:
 
     async def _estimate_prompt_len(
         self,
-        additional_information: dict,
+        additional_information: dict[str, Any],
     ) -> int:
         """Estimate prompt_token_ids placeholder length for the Talker stage.
 
@@ -123,13 +125,13 @@ class VLLMEngine:
         self,
         text: str,
         language: str = "Chinese",
-        speaker: Optional[str] = None,
-        instruct: Optional[str] = None,
-        ref_audio: Optional[str] = None,
-        ref_text: Optional[str] = None,
+        speaker: str | None = None,
+        instruct: str | None = None,
+        ref_audio: str | None = None,
+        ref_text: str | None = None,
         x_vector_only_mode: bool = False,
         max_new_tokens: int = 2048,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream TTS generation, yielding audio chunks as they arrive.
 
         Yields dicts with:
@@ -141,6 +143,7 @@ class VLLMEngine:
         """
         if not self._omni:
             await self.load()
+        assert self._omni is not None
 
         # Determine task type from model_type
         task_type = self._task_type_from_model()
@@ -162,7 +165,7 @@ class VLLMEngine:
             return
 
         # Build additional_information
-        additional_info: Dict[str, Any] = {
+        additional_info: dict[str, Any] = {
             "task_type": [task_type],
             "text": [text],
             "language": [language],
@@ -222,9 +225,9 @@ class VLLMEngine:
                     sr_raw = mm.get("sr", sr)
                     if isinstance(sr_raw, list) and sr_raw:
                         val = sr_raw[-1]
-                        sr = val.item() if hasattr(val, "item") else int(val)
+                        sr = int(val.item()) if hasattr(val, "item") else int(val)
                     elif hasattr(sr_raw, "item"):
-                        sr = sr_raw.item()
+                        sr = int(sr_raw.item())  # type: ignore[union-attr]
 
                     if audio_chunks:
                         audio_tensor = torch.cat(audio_chunks, dim=-1)
@@ -271,7 +274,7 @@ class VLLMEngine:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Return current engine status."""
         return {
             "model_type": self.model_type,
