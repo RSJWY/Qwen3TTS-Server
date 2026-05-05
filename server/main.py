@@ -15,6 +15,7 @@ import io
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import soundfile as sf
@@ -29,6 +30,7 @@ from .config import (
     MODEL_IDS,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_MODEL_TYPE,
+    DEFAULT_MODELS_DIR,
     DEFAULT_HOST,
     DEFAULT_PORT,
 )
@@ -72,14 +74,16 @@ async def startup():
     gpu_util = float(os.environ.get("QWEN3_TTS_GPU_UTIL", "0.3"))
     device = os.environ.get("QWEN3_TTS_DEVICE", "cuda:0")
     stage_configs = os.environ.get("QWEN3_TTS_STAGE_CONFIGS", None)
+    models_dir = os.environ.get("QWEN3_TTS_MODELS_DIR", DEFAULT_MODELS_DIR)
 
     engine = VLLMEngine(
         model_type=model_type,
+        models_dir=models_dir,
         gpu_memory_utilization=gpu_util,
         device=device,
         stage_configs_path=stage_configs if stage_configs else None,
     )
-    logger.info(f"Engine created: model_type={model_type}, device={device}")
+    logger.info(f"Engine created: model_type={model_type}, device={device}, models_dir={models_dir}")
 
 
 @app.get("/v1/audio/status")
@@ -295,7 +299,7 @@ async def ws_tts(websocket: WebSocket):
         logger.info("WebSocket client disconnected")
 
 
-def _numpy_to_pcm16_bytes(audio: np.ndarray) -> bytes:
+def _numpy_to_pcm16_bytes(audio: np.ndarray[Any, Any]) -> bytes:
     """Convert float32 numpy array to signed 16-bit LE PCM bytes."""
     clipped = np.clip(audio, -1.0, 1.0)
     pcm16 = (clipped * 32767).astype(np.int16)

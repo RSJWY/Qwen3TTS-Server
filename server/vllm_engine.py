@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import asyncio
 import uuid
+import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -19,10 +20,14 @@ from .config import (
     SPEAKERS,
     VALID_LANGUAGES,
     MODEL_IDS,
+    MODELSCOPE_IDS,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_MODEL_TYPE,
     DEFAULT_GPU_MEMORY_UTILIZATION,
+    DEFAULT_MODELS_DIR,
 )
+
+logger = logging.getLogger("qwen3_tts_server")
 
 
 def _extract_sample_rate(raw: object, fallback: int = DEFAULT_SAMPLE_RATE) -> int:
@@ -56,12 +61,14 @@ class VLLMEngine:
         self,
         model_type: str = DEFAULT_MODEL_TYPE,
         model_id: str | None = None,
+        models_dir: str = DEFAULT_MODELS_DIR,
         gpu_memory_utilization: float = DEFAULT_GPU_MEMORY_UTILIZATION,
         device: str = "cuda:0",
         stage_configs_path: str | None = None,
     ):
         self.model_type: str = model_type
         self.model_id: str = model_id or MODEL_IDS.get(model_type, MODEL_IDS[DEFAULT_MODEL_TYPE])
+        self.models_dir: str = models_dir
         self.gpu_memory_utilization: float = gpu_memory_utilization
         self.device: str = device
         self.stage_configs_path: str | None = stage_configs_path
@@ -79,20 +86,64 @@ class VLLMEngine:
             return
         self._loading = True
         try:
+            local_path = os.path.join(self.models_dir, self.model_type)
+            model_path = self.model_id
+
+            if os.path.isdir(local_path) and any(os.scandir(local_path)):
+                logger.info("Using local model at %s", local_path)
+                model_path = local_path
+            else:
+                os.makedirs(self.models_dir, exist_ok=True)
+                model_id = MODELSCOPE_IDS.get(self.model_type, self.model_id)
+                try:
+                    logger.info("Downloading model from ModelScope: %s -> %s", model_id, local_path)
+                    import importlib
+
+                    modelscope_hub = importlib.import_module("modelscope.hub")
+                    modelscope_hub.snapshot_download(
+                        model_id,
+                        cache_dir=self.models_dir,
+                        local_dir=local_path,
+                    )
+                    model_path = local_path
+                except Exception as ms_exc:
+                    logger.info("ModelScope download failed, falling back to HuggingFace: %s", ms_exc)
+                    try:
+                        logger.info("Downloading model from HuggingFace: %s -> %s", self.model_id, local_path)
+                        import huggingface_hub
+
+                        huggingface_hub.snapshot_download(
+                            self.model_id,
+                            cache_dir=self.models_dir,
+                            local_dir=local_path,
+                        )
+                        model_path = local_path
+                    except Exception:
+                        logger.exception("Failed to download model from ModelScope and HuggingFace")
+                        raise
+
             kwargs: dict[str, Any] = {
-                "model": self.model_id,
+                "model": model_path,
                 "gpu_memory_utilization": self.gpu_memory_utilization,
             }
             if self.stage_configs_path:
                 kwargs["stage_configs_path"] = self.stage_configs_path
 
-            self._omni = await AsyncOmni.from_cli_args(**kwargs)
+            from_cli_args = getattr(AsyncOmni, "from_cli_args")
+            self._omni = await from_cli_args(**kwargs)
         finally:
             self._loading = False
 
     @property
     def is_loaded(self) -> bool:
         return self._omni is not None
+
+    def _resolve_model_path(self) -> str:
+        """Return the local model path if available, otherwise the HF model ID."""
+        local_path = os.path.join(self.models_dir, self.model_type)
+        if os.path.isdir(local_path) and any(os.scandir(local_path)):
+            return local_path
+        return self.model_id
 
     def request_cancel(self, request_id: str) -> bool:
         """Request cancellation of a running generation."""
@@ -121,9 +172,9 @@ class VLLMEngine:
             from transformers import AutoTokenizer
 
             tok = AutoTokenizer.from_pretrained(
-                self.model_id, trust_remote_code=True, padding_side="left"
+                self._resolve_model_path(), trust_remote_code=True, padding_side="left"
             )
-            cfg = Qwen3TTSConfig.from_pretrained(self.model_id, trust_remote_code=True)
+            cfg = Qwen3TTSConfig.from_pretrained(self._resolve_model_path(), trust_remote_code=True)
 
             task_type = (additional_information.get("task_type") or ["CustomVoice"])[0]
 
@@ -203,7 +254,7 @@ class VLLMEngine:
             additional_info["x_vector_only_mode"] = [x_vector_only_mode]
 
         prompt_len = await self._estimate_prompt_len(additional_info)
-        prompt = {
+        prompt: Any = {
             "prompt_token_ids": [0] * prompt_len,
             "additional_information": additional_info,
         }
@@ -222,7 +273,11 @@ class VLLMEngine:
                     yield {"type": "error", "message": "Generation cancelled"}
                     return
 
-                mm = stage_output.request_output.outputs[0].multimodal_output
+                request_output = getattr(stage_output, "request_output", None)
+                outputs = getattr(request_output, "outputs", None) if request_output is not None else None
+                if not outputs:
+                    continue
+                mm = getattr(outputs[0], "multimodal_output", {})
 
                 if not stage_output.finished:
                     audio = mm.get("audio")
@@ -290,10 +345,10 @@ class VLLMEngine:
             torch.cuda.empty_cache()
 
     def get_status(self) -> dict[str, Any]:
-        """Return current engine status."""
         return {
             "model_type": self.model_type,
             "model_id": self.model_id,
+            "models_dir": self.models_dir,
             "is_loaded": self.is_loaded,
             "is_loading": self._loading,
             "sample_rate": self.sample_rate,

@@ -73,86 +73,86 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
     <h1>Qwen3-TTS</h1>
     <div class="status">
       <span class="dot" id="statusDot"></span>
-      <span id="statusText">connecting</span>
+      <span id="statusText">连接中</span>
     </div>
   </header>
   <main>
     <nav id="tabs">
-      <button class="active" data-tab="custom_voice">CustomVoice</button>
-      <button data-tab="voice_design">VoiceDesign</button>
-      <button data-tab="voice_clone">VoiceClone</button>
+      <button class="active" data-tab="custom_voice">预设音色</button>
+      <button data-tab="voice_design">语音设计</button>
+      <button data-tab="voice_clone">声音克隆</button>
     </nav>
     <div class="content">
       <div id="tab-custom_voice" class="tab-content active">
+      <div class="form-group">
+        <label>文本</label>
+        <textarea id="cv-text" placeholder="请输入要合成的文本..."></textarea>
+      </div>
+      <div class="form-row">
         <div class="form-group">
-          <label>Text</label>
-          <textarea id="cv-text" placeholder="Enter text to synthesize..."></textarea>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Language</label>
-            <select id="cv-language"></select>
-          </div>
-          <div class="form-group">
-            <label>Speaker</label>
-            <select id="cv-speaker"></select>
-          </div>
+          <label>语言</label>
+          <select id="cv-language"></select>
         </div>
         <div class="form-group">
-          <label>Style Instruction (optional)</label>
-          <input type="text" id="cv-instruct" placeholder="e.g. speak slowly and gently">
+          <label>音色</label>
+          <select id="cv-speaker"></select>
         </div>
+      </div>
+      <div class="form-group">
+        <label>风格指令（可选）</label>
+        <input type="text" id="cv-instruct" placeholder="例如：用温柔的语气说">
+      </div>
       </div>
 
       <div id="tab-voice_design" class="tab-content">
         <div class="form-group">
-          <label>Text</label>
-          <textarea id="vd-text" placeholder="Enter text to synthesize..."></textarea>
+          <label>文本</label>
+          <textarea id="vd-text" placeholder="请输入要合成的文本..."></textarea>
         </div>
         <div class="form-group">
-          <label>Language</label>
+          <label>语言</label>
           <select id="vd-language"></select>
         </div>
         <div class="form-group">
-          <label>Voice Description</label>
-          <textarea id="vd-instruct" rows="3" placeholder="e.g. A warm, friendly female voice with slight echo"></textarea>
+          <label>音色描述</label>
+          <textarea id="vd-instruct" rows="3" placeholder="例如：温暖友好的女声，略带回音"></textarea>
         </div>
       </div>
 
       <div id="tab-voice_clone" class="tab-content">
         <div class="form-group">
-          <label>Text</label>
-          <textarea id="vc-text" placeholder="Enter text to synthesize..."></textarea>
+          <label>文本</label>
+          <textarea id="vc-text" placeholder="请输入要合成的文本..."></textarea>
         </div>
         <div class="form-group">
-          <label>Language</label>
+          <label>语言</label>
           <select id="vc-language"></select>
         </div>
         <div class="form-group">
-          <label>Reference Audio</label>
+          <label>参考音频</label>
           <input type="file" id="vc-ref-audio" accept="audio/*">
         </div>
         <div class="form-group">
-          <label>Reference Text (optional)</label>
-          <input type="text" id="vc-ref-text" placeholder="Transcript of reference audio">
+          <label>参考文本（可选）</label>
+          <input type="text" id="vc-ref-text" placeholder="参考音频的文字内容">
         </div>
       </div>
 
       <div class="actions">
-        <button class="generate" id="btnGenerate" disabled>Generate</button>
-        <button class="cancel" id="btnCancel" disabled>Cancel</button>
+        <button class="generate" id="btnGenerate" disabled>生成</button>
+        <button class="cancel" id="btnCancel" disabled>取消</button>
       </div>
 
       <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
 
       <div class="player" id="playerSection" style="display:none">
-        <div class="label">Output</div>
+        <div class="label">输出</div>
         <audio id="audioPlayer" controls></audio>
         <div class="duration" id="durationText"></div>
       </div>
 
       <div class="log">
-        <div class="label">Log</div>
+        <div class="label">日志</div>
         <pre id="logOutput"></pre>
       </div>
     </div>
@@ -171,6 +171,20 @@ let nextPlayOffset = 0;
 let currentTab = 'custom_voice';
 let speakers = [];
 let languages = [];
+
+const LANG_ZH = {
+  'Auto': '自动检测',
+  'Chinese': '中文',
+  'English': '英语',
+  'Japanese': '日语',
+  'Korean': '韩语',
+  'German': '德语',
+  'French': '法语',
+  'Russian': '俄语',
+  'Portuguese': '葡萄牙语',
+  'Spanish': '西班牙语',
+  'Italian': '意大利语',
+};
 
 const $ = id => document.getElementById(id);
 
@@ -280,27 +294,27 @@ function buildWavFromBuffers() {
 async function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${proto}//${location.host}/ws/tts`;
-  log(`Connecting ${url}`);
-  setStatus('loading', 'connecting');
+  log(`连接 ${url}`);
+  setStatus('loading', '连接中');
 
   ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    setStatus('ok', 'connected');
+    setStatus('ok', '已连接');
     $('btnGenerate').disabled = false;
-    log('WebSocket connected');
+    log('WebSocket 已连接');
   };
 
   ws.onclose = () => {
-    setStatus('', 'disconnected');
+    setStatus('', '已断开');
     $('btnGenerate').disabled = true;
-    log('WebSocket closed, reconnecting in 3s...');
+    log('WebSocket 已断开，3秒后重连...');
     setTimeout(connectWS, 3000);
   };
 
   ws.onerror = err => {
-    log('WebSocket error');
+    log('WebSocket 错误');
   };
 
   ws.onmessage = evt => {
@@ -316,27 +330,27 @@ async function connectWS() {
     try {
       const msg = JSON.parse(evt.data);
       switch (msg.type) {
-        case 'session.start':
-          currentRequestId = msg.request_id;
-          log(`Generation started: ${msg.request_id}`);
-          break;
-        case 'audio.done':
-          setGenerating(false);
-          $('progressFill').style.width = '100%';
-          const wavUrl = buildWavFromBuffers();
-          const player = $('audioPlayer');
-          player.src = wavUrl;
-          $('playerSection').style.display = '';
-          $('durationText').textContent = `${msg.total_duration.toFixed(1)}s`;
-          log(`Done: ${msg.total_duration.toFixed(1)}s, ${msg.chunks_sent} chunks`);
-          break;
-        case 'error':
-          setGenerating(false);
-          log(`Error: ${msg.message}`);
-          break;
-        case 'cancel.ack':
-          log(`Cancelled: ${msg.request_id}`);
-          break;
+      case 'session.start':
+        currentRequestId = msg.request_id;
+        log(`生成开始: ${msg.request_id}`);
+        break;
+      case 'audio.done':
+        setGenerating(false);
+        $('progressFill').style.width = '100%';
+        const wavUrl = buildWavFromBuffers();
+        const player = $('audioPlayer');
+        player.src = wavUrl;
+        $('playerSection').style.display = '';
+        $('durationText').textContent = `${msg.total_duration.toFixed(1)}秒`;
+        log(`完成: ${msg.total_duration.toFixed(1)}秒, ${msg.chunks_sent} 个音频块`);
+        break;
+      case 'error':
+        setGenerating(false);
+        log(`错误: ${msg.message}`);
+        break;
+      case 'cancel.ack':
+        log(`已取消: ${msg.request_id}`);
+        break;
       }
     } catch (e) {
       log(`Parse error: ${e}`);
@@ -360,7 +374,7 @@ async function loadMetadata() {
       sel.innerHTML = '';
       for (const l of languages) {
         const opt = document.createElement('option');
-        opt.value = l; opt.textContent = l;
+        opt.value = l; opt.textContent = LANG_ZH[l] || l;
         if (l === 'Auto') opt.selected = true;
         sel.appendChild(opt);
       }
@@ -370,23 +384,23 @@ async function loadMetadata() {
     spkSel.innerHTML = '';
     for (const s of speakers) {
       const opt = document.createElement('option');
-      opt.value = s.name; opt.textContent = `${s.name} — ${s.description_en}`;
+      opt.value = s.name; opt.textContent = `${s.name} — ${s.description_zh}`;
       if (s.name === 'Vivian') opt.selected = true;
       spkSel.appendChild(opt);
     }
   } catch (e) {
-    log('Failed to load metadata, using defaults');
+    log('加载元数据失败，使用默认值');
     const langSelects = ['cv-language', 'vd-language', 'vc-language'];
-    const defaultLangs = ['Auto','Chinese','English','Japanese','Korean','German','French','Russian','Portuguese','Spanish','Italian'];
-    for (const id of langSelects) {
-      const sel = $(id);
-      sel.innerHTML = '';
-      for (const l of defaultLangs) {
-        const opt = document.createElement('option');
-        opt.value = l; opt.textContent = l;
-        sel.appendChild(opt);
+      const defaultLangs = ['Auto','Chinese','English','Japanese','Korean','German','French','Russian','Portuguese','Spanish','Italian'];
+      for (const id of langSelects) {
+        const sel = $(id);
+        sel.innerHTML = '';
+        for (const l of defaultLangs) {
+          const opt = document.createElement('option');
+          opt.value = l; opt.textContent = LANG_ZH[l] || l;
+          sel.appendChild(opt);
+        }
       }
-    }
     const spkSel = $('cv-speaker');
     spkSel.innerHTML = '<option value="Vivian">Vivian</option><option value="Ryan">Ryan</option>';
   }
@@ -411,12 +425,12 @@ async function readAudioFileAsBase64(input) {
 
 async function generate() {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    log('Not connected');
+    log('未连接');
     return;
   }
 
   const text = $(currentTab === 'custom_voice' ? 'cv-text' : currentTab === 'voice_design' ? 'vd-text' : 'vc-text').value.trim();
-  if (!text) { log('Enter text first'); return; }
+  if (!text) { log('请先输入文本'); return; }
 
   initAudioContext();
   resetPlayback();
@@ -437,11 +451,11 @@ async function generate() {
     if (inst) msg.instruct = inst;
   } else if (currentTab === 'voice_design') {
     const inst = $('vd-instruct').value.trim();
-    if (!inst) { log('Voice description required'); setGenerating(false); return; }
+    if (!inst) { log('请输入音色描述'); setGenerating(false); return; }
     msg.instruct = inst;
   } else if (currentTab === 'voice_clone') {
     const refB64 = await readAudioFileAsBase64($('vc-ref-audio'));
-    if (!refB64) { log('Reference audio required'); setGenerating(false); return; }
+    if (!refB64) { log('请提供参考音频'); setGenerating(false); return; }
     msg.ref_audio = refB64;
     const rt = $('vc-ref-text').value.trim();
     if (rt) msg.ref_text = rt;
@@ -455,7 +469,7 @@ function cancel() {
     ws.send(JSON.stringify({ type: 'cancel', request_id: currentRequestId }));
     setGenerating(false);
     resetPlayback();
-    log('Cancel requested');
+    log('已请求取消');
   }
 }
 

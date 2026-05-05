@@ -13,11 +13,13 @@ def main():
     parser.add_argument("--gpu-util", type=float, default=0.3, help="GPU memory utilization 0-1 (default: 0.3)")
     parser.add_argument("--device", default="cuda:0", help="CUDA device (default: cuda:0)")
     parser.add_argument("--stage-configs", default=None, help="Path to vLLM-Omni stage configs YAML")
+    parser.add_argument("--models-dir", default="models", help="Directory for local model storage (default: models)")
     args = parser.parse_args()
 
     os.environ["QWEN3_TTS_MODEL_TYPE"] = args.model_type
     os.environ["QWEN3_TTS_GPU_UTIL"] = str(args.gpu_util)
     os.environ["QWEN3_TTS_DEVICE"] = args.device
+    os.environ["QWEN3_TTS_MODELS_DIR"] = args.models_dir
     if args.stage_configs:
         os.environ["QWEN3_TTS_STAGE_CONFIGS"] = args.stage_configs
 

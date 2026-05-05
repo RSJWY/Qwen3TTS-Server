@@ -1,7 +1,17 @@
 """Configuration constants for Qwen3-TTS Server."""
 
+# Local models directory (relative to project root by default)
+DEFAULT_MODELS_DIR = "models"
+
 # HuggingFace model IDs used by vLLM-Omni directly
 MODEL_IDS = {
+    "custom_voice": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "voice_design": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "base": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+}
+
+# ModelScope IDs mirror HuggingFace IDs for Qwen models
+MODELSCOPE_IDS = {
     "custom_voice": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     "voice_design": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
     "base": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
