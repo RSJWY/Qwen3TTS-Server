@@ -1,0 +1,284 @@
+"""vLLM-Omni TTS Engine for Qwen3-TTS streaming generation."""
+
+import os
+import asyncio
+import uuid
+from typing import AsyncGenerator, Optional, Dict, Any
+
+import numpy as np
+import torch
+
+# Must be set before importing vllm_omni
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+from vllm_omni import AsyncOmni
+
+from .config import (
+    SPEAKERS,
+    VALID_LANGUAGES,
+    MODEL_IDS,
+    DEFAULT_SAMPLE_RATE,
+    DEFAULT_MODEL_TYPE,
+    DEFAULT_GPU_MEMORY_UTILIZATION,
+)
+
+
+class VLLMEngine:
+    """vLLM-Omni based TTS engine with true streaming generation.
+
+    Each model type (custom_voice, voice_design, base) gets its own
+    AsyncOmni instance so they can be loaded/unloaded independently.
+    """
+
+    def __init__(
+        self,
+        model_type: str = DEFAULT_MODEL_TYPE,
+        model_id: Optional[str] = None,
+        gpu_memory_utilization: float = DEFAULT_GPU_MEMORY_UTILIZATION,
+        device: str = "cuda:0",
+        stage_configs_path: Optional[str] = None,
+    ):
+        self.model_type = model_type
+        self.model_id = model_id or MODEL_IDS.get(model_type, MODEL_IDS[DEFAULT_MODEL_TYPE])
+        self.gpu_memory_utilization = gpu_memory_utilization
+        self.device = device
+        self.stage_configs_path = stage_configs_path
+        self.sample_rate = DEFAULT_SAMPLE_RATE
+
+        self._omni: Optional[AsyncOmni] = None
+        self._loading = False
+        self._cancel_events: Dict[str, asyncio.Event] = {}
+
+    async def load(self) -> None:
+        """Load the AsyncOmni model."""
+        if self._omni is not None:
+            return
+        if self._loading:
+            return
+        self._loading = True
+        try:
+            kwargs: Dict[str, Any] = {
+                "model": self.model_id,
+                "gpu_memory_utilization": self.gpu_memory_utilization,
+            }
+            if self.stage_configs_path:
+                kwargs["stage_configs_path"] = self.stage_configs_path
+
+            self._omni = await AsyncOmni.from_cli_args(**kwargs)
+        finally:
+            self._loading = False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._omni is not None
+
+    def request_cancel(self, request_id: str) -> bool:
+        """Request cancellation of a running generation."""
+        if request_id in self._cancel_events:
+            self._cancel_events[request_id].set()
+            return True
+        return False
+
+    async def _estimate_prompt_len(
+        self,
+        additional_information: dict,
+    ) -> int:
+        """Estimate prompt_token_ids placeholder length for the Talker stage.
+
+        The AR Talker replaces all input embeddings via preprocess, so the
+        placeholder values are irrelevant but the length must match the
+        embeddings that preprocess will produce.
+        """
+        try:
+            from vllm_omni.model_executor.models.qwen3_tts.configuration_qwen3_tts import (
+                Qwen3TTSConfig,
+            )
+            from vllm_omni.model_executor.models.qwen3_tts.qwen3_tts_talker import (
+                Qwen3TTSTalkerForConditionalGeneration,
+            )
+            from transformers import AutoTokenizer
+
+            tok = AutoTokenizer.from_pretrained(
+                self.model_id, trust_remote_code=True, padding_side="left"
+            )
+            cfg = Qwen3TTSConfig.from_pretrained(self.model_id, trust_remote_code=True)
+
+            task_type = (additional_information.get("task_type") or ["CustomVoice"])[0]
+
+            return Qwen3TTSTalkerForConditionalGeneration.estimate_prompt_len_from_additional_information(
+                additional_information=additional_information,
+                task_type=task_type,
+                tokenize_prompt=lambda t: tok(t, padding=False)["input_ids"],
+                codec_language_id=getattr(cfg, "codec_language_id", None),
+                spk_is_dialect=getattr(cfg, "spk_is_dialect", None),
+                estimate_ref_code_len=lambda _: None,
+            )
+        except Exception:
+            # Fallback: rough estimate
+            text = additional_information.get("text", [""])[0]
+            extra = additional_information.get("instruct", [""])[0]
+            return max(100, int((len(text) + len(extra)) * 1.5) + 256)
+
+    async def generate_stream(
+        self,
+        text: str,
+        language: str = "Chinese",
+        speaker: Optional[str] = None,
+        instruct: Optional[str] = None,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
+        x_vector_only_mode: bool = False,
+        max_new_tokens: int = 2048,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream TTS generation, yielding audio chunks as they arrive.
+
+        Yields dicts with:
+          - type: "audio_chunk" | "audio_done" | "error"
+          - audio: numpy array (for audio_chunk)
+          - sample_rate: int (for audio_chunk)
+          - total_duration: float (for audio_done, in seconds)
+          - message: str (for error)
+        """
+        if not self._omni:
+            await self.load()
+
+        # Determine task type from model_type
+        task_type = self._task_type_from_model()
+
+        # Validate inputs
+        if task_type == "CustomVoice":
+            speaker = speaker or "Vivian"
+            if speaker not in SPEAKERS:
+                yield {"type": "error", "message": f"Unknown speaker: {speaker}"}
+                return
+        if language not in VALID_LANGUAGES:
+            yield {"type": "error", "message": f"Unknown language: {language}"}
+            return
+        if task_type == "VoiceDesign" and not instruct:
+            yield {"type": "error", "message": "instruct is required for VoiceDesign"}
+            return
+        if task_type == "Base" and not ref_audio:
+            yield {"type": "error", "message": "ref_audio is required for voice cloning"}
+            return
+
+        # Build additional_information
+        additional_info: Dict[str, Any] = {
+            "task_type": [task_type],
+            "text": [text],
+            "language": [language],
+            "max_new_tokens": [max_new_tokens],
+        }
+        if task_type == "CustomVoice":
+            additional_info["speaker"] = [speaker]
+            additional_info["instruct"] = [instruct or ""]
+        elif task_type == "VoiceDesign":
+            additional_info["instruct"] = [instruct]
+            additional_info["non_streaming_mode"] = [False]
+        elif task_type == "Base":
+            additional_info["ref_audio"] = [ref_audio]
+            additional_info["ref_text"] = [ref_text or ""]
+            additional_info["x_vector_only_mode"] = [x_vector_only_mode]
+
+        prompt_len = await self._estimate_prompt_len(additional_info)
+        prompt = {
+            "prompt_token_ids": [0] * prompt_len,
+            "additional_information": additional_info,
+        }
+
+        request_id = str(uuid.uuid4())[:8]
+        cancel_event = asyncio.Event()
+        self._cancel_events[request_id] = cancel_event
+
+        audio_chunks: list[torch.Tensor] = []
+        sr = self.sample_rate
+
+        try:
+            async for stage_output in self._omni.generate(prompt, request_id=request_id):
+                # Check cancellation
+                if cancel_event.is_set():
+                    yield {"type": "error", "message": "Generation cancelled"}
+                    return
+
+                mm = stage_output.request_output.outputs[0].multimodal_output
+
+                if not stage_output.finished:
+                    audio = mm.get("audio")
+                    if audio is not None:
+                        if isinstance(audio, list):
+                            audio_chunks.extend(audio)
+                        else:
+                            audio_chunks.append(audio)
+
+                        # Yield the accumulated audio so far
+                        combined = torch.cat(audio_chunks, dim=-1)
+                        audio_np = combined.float().cpu().numpy().flatten()
+                        yield {
+                            "type": "audio_chunk",
+                            "audio": audio_np,
+                            "sample_rate": sr,
+                        }
+                else:
+                    # Final output
+                    sr_raw = mm.get("sr", sr)
+                    if isinstance(sr_raw, list) and sr_raw:
+                        val = sr_raw[-1]
+                        sr = val.item() if hasattr(val, "item") else int(val)
+                    elif hasattr(sr_raw, "item"):
+                        sr = sr_raw.item()
+
+                    if audio_chunks:
+                        audio_tensor = torch.cat(audio_chunks, dim=-1)
+                        audio_np = audio_tensor.float().cpu().numpy().flatten()
+                        total_duration = len(audio_np) / sr
+                        yield {
+                            "type": "audio_done",
+                            "audio": audio_np,
+                            "sample_rate": sr,
+                            "total_duration": total_duration,
+                        }
+                    else:
+                        yield {"type": "error", "message": "No audio generated"}
+        except asyncio.CancelledError:
+            yield {"type": "error", "message": "Generation cancelled"}
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
+        finally:
+            self._cancel_events.pop(request_id, None)
+
+    def _task_type_from_model(self) -> str:
+        """Determine task type from the loaded model_type."""
+        mapping = {
+            "custom_voice": "CustomVoice",
+            "voice_design": "VoiceDesign",
+            "base": "Base",
+        }
+        return mapping.get(self.model_type, "CustomVoice")
+
+    async def switch_model(self, model_type: str) -> None:
+        """Switch to a different model type (unloads current, loads new)."""
+        if model_type == self.model_type and self._omni is not None:
+            return
+        self.unload()
+        self.model_type = model_type
+        self.model_id = MODEL_IDS.get(model_type, MODEL_IDS[DEFAULT_MODEL_TYPE])
+        await self.load()
+
+    def unload(self) -> None:
+        """Unload the current model and free GPU memory."""
+        if self._omni is not None:
+            del self._omni
+            self._omni = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return current engine status."""
+        return {
+            "model_type": self.model_type,
+            "model_id": self.model_id,
+            "is_loaded": self.is_loaded,
+            "is_loading": self._loading,
+            "sample_rate": self.sample_rate,
+            "device": self.device,
+            "gpu_memory_utilization": self.gpu_memory_utilization,
+        }

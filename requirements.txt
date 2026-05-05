@@ -1,0 +1,14 @@
+# Core
+vllm>=0.20.0
+vllm-omni>=0.1.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+websockets>=12.0
+pydantic>=2.0
+
+# Audio
+soundfile>=0.12.0
+numpy>=1.24.0
+
+# ML (vLLM handles torch, but these are needed for engine)
+torch>=2.0.0

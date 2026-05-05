@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen3-TTS</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --primary:#58a6ff;--primary-dim:#1f6feb;--accent:#f78166;
+  --text:#c9d1d9;--text-bright:#f0f6fc;--text-muted:#8b949e;
+  --radius:6px;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5}
+#app{display:flex;flex-direction:column;height:100%}
+
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
+header h1{font-size:15px;font-weight:600;color:var(--text-bright)}
+header .status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)}
+header .dot{width:7px;height:7px;border-radius:50%;background:var(--text-muted);flex-shrink:0}
+header .dot.ok{background:#3fb950}
+header .dot.loading{background:#d29922;animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+main{display:flex;flex:1;overflow:hidden}
+nav{width:220px;border-right:1px solid var(--border);padding:12px 0;flex-shrink:0;overflow-y:auto}
+nav button{display:block;width:100%;text-align:left;padding:8px 16px;background:none;border:none;color:var(--text);font-size:13px;cursor:pointer;border-left:2px solid transparent}
+nav button:hover{background:rgba(255,255,255,.04);color:var(--text-bright)}
+nav button.active{color:var(--primary);border-left-color:var(--primary);background:rgba(88,166,255,.06)}
+
+.content{flex:1;padding:24px;overflow-y:auto;display:flex;flex-direction:column;gap:16px;max-width:640px}
+.form-group{display:flex;flex-direction:column;gap:6px}
+.form-group label{font-size:12px;font-weight:500;color:var(--text-muted)}
+.form-group textarea,.form-group input,.form-group select{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-bright);padding:8px 10px;font-family:var(--font);font-size:13px;outline:none;resize:vertical}
+.form-group textarea:focus,.form-group input:focus,.form-group select:focus{border-color:var(--primary)}
+.form-group textarea{min-height:72px}
+.form-row{display:flex;gap:12px}
+.form-row .form-group{flex:1}
+.form-group select{appearance:none;cursor:pointer}
+
+.actions{display:flex;gap:8px;align-items:center}
+button.generate{background:var(--primary-dim);color:#fff;border:none;border-radius:var(--radius);padding:8px 20px;font-size:13px;font-weight:500;cursor:pointer;transition:background 150ms ease}
+button.generate:hover{background:var(--primary)}
+button.generate:disabled{opacity:.4;cursor:not-allowed}
+button.cancel{background:none;border:1px solid var(--accent);color:var(--accent);border-radius:var(--radius);padding:8px 16px;font-size:13px;cursor:pointer;transition:opacity 150ms ease}
+button.cancel:hover{opacity:.8}
+button.cancel:disabled{opacity:.3;cursor:not-allowed}
+
+.progress-bar{height:3px;background:var(--border);border-radius:2px;overflow:hidden;display:none}
+.progress-bar.active{display:block}
+.progress-bar .fill{height:100%;background:var(--primary);transition:width 200ms ease;width:0%}
+
+.player{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;display:flex;flex-direction:column;gap:12px}
+.player .label{font-size:12px;color:var(--text-muted)}
+.player audio{width:100%;height:36px;border-radius:var(--radius)}
+.player .duration{font-size:12px;color:var(--text-muted);text-align:right}
+
+.log{margin-top:auto;padding-top:12px;border-top:1px solid var(--border)}
+.log .label{font-size:11px;color:var(--text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.log pre{font-family:"SF Mono",Monaco,Consolas,"Liberation Mono",monospace;font-size:12px;line-height:1.6;color:var(--text-muted);max-height:140px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+
+.tab-content{display:none}
+.tab-content.active{display:flex;flex-direction:column;gap:16px}
+
+.form-group input[type="file"]{padding:6px 0;font-size:12px}
+.form-group input[type="file"]::file-selector-button{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:4px 10px;font-size:12px;cursor:pointer;margin-right:8px}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Qwen3-TTS</h1>
+    <div class="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">connecting</span>
+    </div>
+  </header>
+  <main>
+    <nav id="tabs">
+      <button class="active" data-tab="custom_voice">CustomVoice</button>
+      <button data-tab="voice_design">VoiceDesign</button>
+      <button data-tab="voice_clone">VoiceClone</button>
+    </nav>
+    <div class="content">
+      <div id="tab-custom_voice" class="tab-content active">
+        <div class="form-group">
+          <label>Text</label>
+          <textarea id="cv-text" placeholder="Enter text to synthesize..."></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Language</label>
+            <select id="cv-language"></select>
+          </div>
+          <div class="form-group">
+            <label>Speaker</label>
+            <select id="cv-speaker"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Style Instruction (optional)</label>
+          <input type="text" id="cv-instruct" placeholder="e.g. speak slowly and gently">
+        </div>
+      </div>
+
+      <div id="tab-voice_design" class="tab-content">
+        <div class="form-group">
+          <label>Text</label>
+          <textarea id="vd-text" placeholder="Enter text to synthesize..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Language</label>
+          <select id="vd-language"></select>
+        </div>
+        <div class="form-group">
+          <label>Voice Description</label>
+          <textarea id="vd-instruct" rows="3" placeholder="e.g. A warm, friendly female voice with slight echo"></textarea>
+        </div>
+      </div>
+
+      <div id="tab-voice_clone" class="tab-content">
+        <div class="form-group">
+          <label>Text</label>
+          <textarea id="vc-text" placeholder="Enter text to synthesize..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Language</label>
+          <select id="vc-language"></select>
+        </div>
+        <div class="form-group">
+          <label>Reference Audio</label>
+          <input type="file" id="vc-ref-audio" accept="audio/*">
+        </div>
+        <div class="form-group">
+          <label>Reference Text (optional)</label>
+          <input type="text" id="vc-ref-text" placeholder="Transcript of reference audio">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="generate" id="btnGenerate" disabled>Generate</button>
+        <button class="cancel" id="btnCancel" disabled>Cancel</button>
+      </div>
+
+      <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+
+      <div class="player" id="playerSection" style="display:none">
+        <div class="label">Output</div>
+        <audio id="audioPlayer" controls></audio>
+        <div class="duration" id="durationText"></div>
+      </div>
+
+      <div class="log">
+        <div class="label">Log</div>
+        <pre id="logOutput"></pre>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const SAMPLE_RATE = 24000;
+let ws = null;
+let currentRequestId = null;
+let isGenerating = false;
+let audioCtx = null;
+let pcmBuffers = [];
+let playStartTime = 0;
+let nextPlayOffset = 0;
+let currentTab = 'custom_voice';
+let speakers = [];
+let languages = [];
+
+const $ = id => document.getElementById(id);
+
+function log(msg) {
+  const el = $('logOutput');
+  const t = new Date().toLocaleTimeString();
+  el.textContent += `[${t}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(state, text) {
+  const dot = $('statusDot');
+  const label = $('statusText');
+  dot.className = 'dot ' + (state === 'ok' ? 'ok' : state === 'loading' ? 'loading' : '');
+  label.textContent = text;
+}
+
+function setGenerating(v) {
+  isGenerating = v;
+  $('btnGenerate').disabled = v;
+  $('btnCancel').disabled = !v;
+  $('progressBar').className = v ? 'progress-bar active' : 'progress-bar';
+  if (v) {
+    $('progressFill').style.width = '0%';
+  }
+}
+
+function initAudioContext() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+}
+
+function playPcmChunk(int16Array) {
+  if (!audioCtx) return;
+  const float32 = new Float32Array(int16Array.length);
+  for (let i = 0; i < int16Array.length; i++) {
+    float32[i] = int16Array[i] / 32768;
+  }
+  pcmBuffers.push(float32);
+
+  const buffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+  buffer.getChannelData(0).set(float32);
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  const startTime = Math.max(now, nextPlayOffset);
+  source.start(startTime);
+  nextPlayOffset = startTime + buffer.duration;
+}
+
+function resetPlayback() {
+  pcmBuffers = [];
+  nextPlayOffset = 0;
+  const player = $('audioPlayer');
+  player.src = '';
+  player.load();
+  $('playerSection').style.display = 'none';
+  $('durationText').textContent = '';
+}
+
+function buildWavFromBuffers() {
+  let totalLen = 0;
+  for (const b of pcmBuffers) totalLen += b.length;
+  const merged = new Float32Array(totalLen);
+  let offset = 0;
+  for (const b of pcmBuffers) {
+    merged.set(b, offset);
+    offset += b.length;
+  }
+
+  const numSamples = merged.length;
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+
+  function writeStr(offset, str) { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); }
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, SAMPLE_RATE, true);
+  view.setUint32(28, SAMPLE_RATE * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, merged[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 32768 : s * 32767, true);
+  }
+
+  const blob = new Blob([buffer], { type: 'audio/wav' });
+  return URL.createObjectURL(blob);
+}
+
+async function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/tts`;
+  log(`Connecting ${url}`);
+  setStatus('loading', 'connecting');
+
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('ok', 'connected');
+    $('btnGenerate').disabled = false;
+    log('WebSocket connected');
+  };
+
+  ws.onclose = () => {
+    setStatus('', 'disconnected');
+    $('btnGenerate').disabled = true;
+    log('WebSocket closed, reconnecting in 3s...');
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = err => {
+    log('WebSocket error');
+  };
+
+  ws.onmessage = evt => {
+    if (evt.data instanceof ArrayBuffer) {
+      const int16 = new Int16Array(evt.data);
+      playPcmChunk(int16);
+      const totalSamples = pcmBuffers.reduce((s, b) => s + b.length, 0);
+      const progress = Math.min(100, Math.round((totalSamples / SAMPLE_RATE) * 10));
+      $('progressFill').style.width = progress + '%';
+      return;
+    }
+
+    try {
+      const msg = JSON.parse(evt.data);
+      switch (msg.type) {
+        case 'session.start':
+          currentRequestId = msg.request_id;
+          log(`Generation started: ${msg.request_id}`);
+          break;
+        case 'audio.done':
+          setGenerating(false);
+          $('progressFill').style.width = '100%';
+          const wavUrl = buildWavFromBuffers();
+          const player = $('audioPlayer');
+          player.src = wavUrl;
+          $('playerSection').style.display = '';
+          $('durationText').textContent = `${msg.total_duration.toFixed(1)}s`;
+          log(`Done: ${msg.total_duration.toFixed(1)}s, ${msg.chunks_sent} chunks`);
+          break;
+        case 'error':
+          setGenerating(false);
+          log(`Error: ${msg.message}`);
+          break;
+        case 'cancel.ack':
+          log(`Cancelled: ${msg.request_id}`);
+          break;
+      }
+    } catch (e) {
+      log(`Parse error: ${e}`);
+    }
+  };
+}
+
+async function fetchJSON(path) {
+  const r = await fetch(path);
+  return r.json();
+}
+
+async function loadMetadata() {
+  try {
+    speakers = await fetchJSON('/v1/audio/speakers');
+    languages = await fetchJSON('/v1/audio/languages');
+
+    const langSelects = ['cv-language', 'vd-language', 'vc-language'];
+    for (const id of langSelects) {
+      const sel = $(id);
+      sel.innerHTML = '';
+      for (const l of languages) {
+        const opt = document.createElement('option');
+        opt.value = l; opt.textContent = l;
+        if (l === 'Auto') opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
+
+    const spkSel = $('cv-speaker');
+    spkSel.innerHTML = '';
+    for (const s of speakers) {
+      const opt = document.createElement('option');
+      opt.value = s.name; opt.textContent = `${s.name} — ${s.description_en}`;
+      if (s.name === 'Vivian') opt.selected = true;
+      spkSel.appendChild(opt);
+    }
+  } catch (e) {
+    log('Failed to load metadata, using defaults');
+    const langSelects = ['cv-language', 'vd-language', 'vc-language'];
+    const defaultLangs = ['Auto','Chinese','English','Japanese','Korean','German','French','Russian','Portuguese','Spanish','Italian'];
+    for (const id of langSelects) {
+      const sel = $(id);
+      sel.innerHTML = '';
+      for (const l of defaultLangs) {
+        const opt = document.createElement('option');
+        opt.value = l; opt.textContent = l;
+        sel.appendChild(opt);
+      }
+    }
+    const spkSel = $('cv-speaker');
+    spkSel.innerHTML = '<option value="Vivian">Vivian</option><option value="Ryan">Ryan</option>';
+  }
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.querySelectorAll('nav button').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+}
+
+async function readAudioFileAsBase64(input) {
+  if (!input.files || !input.files[0]) return null;
+  const file = input.files[0];
+  const buf = await file.arrayBuffer();
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+  return `data:${file.type};base64,${b64}`;
+}
+
+async function generate() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log('Not connected');
+    return;
+  }
+
+  const text = $(currentTab === 'custom_voice' ? 'cv-text' : currentTab === 'voice_design' ? 'vd-text' : 'vc-text').value.trim();
+  if (!text) { log('Enter text first'); return; }
+
+  initAudioContext();
+  resetPlayback();
+  setGenerating(true);
+
+  const modelTypeMap = { custom_voice: 'custom_voice', voice_design: 'voice_design', voice_clone: 'base' };
+
+  const msg = {
+    type: 'generate',
+    text,
+    model_type: modelTypeMap[currentTab],
+    language: $(currentTab === 'custom_voice' ? 'cv-language' : currentTab === 'voice_design' ? 'vd-language' : 'vc-language').value,
+  };
+
+  if (currentTab === 'custom_voice') {
+    msg.speaker = $('cv-speaker').value;
+    const inst = $('cv-instruct').value.trim();
+    if (inst) msg.instruct = inst;
+  } else if (currentTab === 'voice_design') {
+    const inst = $('vd-instruct').value.trim();
+    if (!inst) { log('Voice description required'); setGenerating(false); return; }
+    msg.instruct = inst;
+  } else if (currentTab === 'voice_clone') {
+    const refB64 = await readAudioFileAsBase64($('vc-ref-audio'));
+    if (!refB64) { log('Reference audio required'); setGenerating(false); return; }
+    msg.ref_audio = refB64;
+    const rt = $('vc-ref-text').value.trim();
+    if (rt) msg.ref_text = rt;
+  }
+
+  ws.send(JSON.stringify(msg));
+}
+
+function cancel() {
+  if (currentRequestId && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'cancel', request_id: currentRequestId }));
+    setGenerating(false);
+    resetPlayback();
+    log('Cancel requested');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadMetadata();
+  connectWS();
+
+  document.querySelectorAll('nav button').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  $('btnGenerate').addEventListener('click', generate);
+  $('btnCancel').addEventListener('click', cancel);
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && isGenerating) cancel();
+  });
+});
+</script>
+</body>
+</html>
