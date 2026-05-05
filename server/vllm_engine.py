@@ -102,14 +102,12 @@ class VLLMEngine:
                     model_path = local_path
 
             kwargs: dict[str, Any] = {
-                "model": model_path,
                 "gpu_memory_utilization": self.gpu_memory_utilization,
             }
             if self.stage_configs_path:
                 kwargs["stage_configs_path"] = self.stage_configs_path
 
-            from_cli_args = getattr(AsyncOmni, "from_cli_args")
-            self._omni = await from_cli_args(**kwargs)
+            self._omni = AsyncOmni(model=model_path, **kwargs)
         finally:
             self._loading = False
 

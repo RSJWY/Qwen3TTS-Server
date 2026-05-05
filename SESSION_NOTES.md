@@ -95,6 +95,10 @@ Qwen3-TTS-Server/
 - **vllm-omni 0.18.0 仅兼容 vllm 0.18.x**。vllm 0.19+ 移除了 `vllm.inputs.data`
 - `requirements.txt` 已 pin：`vllm>=0.18.0,<0.19.0`
 
+## 已修复
+
+1. **AsyncOmni 初始化错误** — `from_cli_args` 不存在于 vllm-omni 0.18.0 的 `AsyncOmni`/`OmniBase` 类上。改为直接构造 `AsyncOmni(model=model_path, **kwargs)`。`OmniBase.__init__` 接受 `model: str` 和 `**kwargs`（`gpu_memory_utilization`, `stage_configs_path` 等），内部创建 `AsyncOmniEngine`。
+
 ## 待完成
 
 1. **实际 GPU 测试** — 代码基于 vLLM-Omni 文档编写，需 GPU 环境验证
