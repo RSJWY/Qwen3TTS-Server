@@ -100,6 +100,7 @@ Qwen3-TTS-Server/
 1. **AsyncOmni 初始化错误** — `from_cli_args` 不存在于 vllm-omni 0.18.0 的 `AsyncOmni`/`OmniBase` 类上。改为直接构造 `AsyncOmni(model=model_path, **kwargs)`。`OmniBase.__init__` 接受 `model: str` 和 `**kwargs`（`gpu_memory_utilization`, `stage_configs_path` 等），内部创建 `AsyncOmniEngine`。
 2. **FlashInfer 版本不匹配** — `flashinfer-cubin 0.6.8.post1` 与 `flashinfer-python 0.6.6` 不匹配，导致 Stage 0 (Talker) WorkerProc 崩溃。修复：`pip install flashinfer-cubin==0.6.6` 对齐版本，`requirements.txt` 新增 pin。同时添加 `FLASHINFER_DISABLE_VERSION_CHECK=1` 环境变量作为安全回退。
 3. **缺失系统依赖** — 安装 `sox`（音频处理）和 `python3.12-dev`（Triton kernel 编译需要 Python.h）。
+4. **generate_stream 输出处理** — 改用 `stage_output.multimodal_output` 属性替代手动 `getattr` 链，该属性统一处理 pipeline 和 diffusion 输出路径。prompt 类型改用 `OmniPromptType` 满足类型检查。
 
 ## 环境注意事项
 

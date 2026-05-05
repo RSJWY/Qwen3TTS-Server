@@ -16,6 +16,7 @@ os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 os.environ.setdefault("FLASHINFER_DISABLE_VERSION_CHECK", "1")
 
 from vllm_omni import AsyncOmni
+from vllm_omni.inputs.data import OmniPromptType
 
 from .config import (
     SPEAKERS,
@@ -213,7 +214,6 @@ class VLLMEngine:
             yield {"type": "error", "message": "ref_audio is required for voice cloning"}
             return
 
-        # Build additional_information
         additional_info: dict[str, Any] = {
             "task_type": [task_type],
             "text": [text],
@@ -232,7 +232,7 @@ class VLLMEngine:
             additional_info["x_vector_only_mode"] = [x_vector_only_mode]
 
         prompt_len = await self._estimate_prompt_len(additional_info)
-        prompt: Any = {
+        prompt: OmniPromptType = {  # type: ignore[typeddict-item]
             "prompt_token_ids": [0] * prompt_len,
             "additional_information": additional_info,
         }
@@ -251,44 +251,38 @@ class VLLMEngine:
                     yield {"type": "error", "message": "Generation cancelled"}
                     return
 
-                request_output = getattr(stage_output, "request_output", None)
-                outputs = getattr(request_output, "outputs", None) if request_output is not None else None
-                if not outputs:
+                mm = stage_output.multimodal_output
+                if not mm:
                     continue
-                mm = getattr(outputs[0], "multimodal_output", {})
+
+                audio = mm.get("audio")
+                if audio is None:
+                    continue
+
+                if isinstance(audio, list):
+                    audio_chunks.extend(audio)
+                else:
+                    audio_chunks.append(audio)
 
                 if not stage_output.finished:
-                    audio = mm.get("audio")
-                    if audio is not None:
-                        if isinstance(audio, list):
-                            audio_chunks.extend(audio)
-                        else:
-                            audio_chunks.append(audio)
-
-                        # Yield the accumulated audio so far
-                        combined = torch.cat(audio_chunks, dim=-1)
-                        audio_np = combined.float().cpu().numpy().flatten()
-                        yield {
-                            "type": "audio_chunk",
-                            "audio": audio_np,
-                            "sample_rate": sr,
-                        }
+                    combined = torch.cat(audio_chunks, dim=-1)
+                    audio_np = combined.float().cpu().numpy().flatten()
+                    yield {
+                        "type": "audio_chunk",
+                        "audio": audio_np,
+                        "sample_rate": sr,
+                    }
                 else:
-                    # Final output
                     sr = _extract_sample_rate(mm.get("sr"), sr)
-
-                    if audio_chunks:
-                        audio_tensor = torch.cat(audio_chunks, dim=-1)
-                        audio_np = audio_tensor.float().cpu().numpy().flatten()
-                        total_duration = len(audio_np) / sr
-                        yield {
-                            "type": "audio_done",
-                            "audio": audio_np,
-                            "sample_rate": sr,
-                            "total_duration": total_duration,
-                        }
-                    else:
-                        yield {"type": "error", "message": "No audio generated"}
+                    audio_tensor = torch.cat(audio_chunks, dim=-1)
+                    audio_np = audio_tensor.float().cpu().numpy().flatten()
+                    total_duration = len(audio_np) / sr
+                    yield {
+                        "type": "audio_done",
+                        "audio": audio_np,
+                        "sample_rate": sr,
+                        "total_duration": total_duration,
+                    }
         except asyncio.CancelledError:
             yield {"type": "error", "message": "Generation cancelled"}
         except Exception as e:
