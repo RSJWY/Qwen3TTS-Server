@@ -35,12 +35,14 @@ from .config import (
     DEFAULT_PORT,
 )
 from .vllm_engine import VLLMEngine
+from .model_manager import ModelManager
 
 logger = logging.getLogger("qwen3_tts_server")
 
 app = FastAPI(title="Qwen3-TTS Server", version="1.0.0")
 
 engine: VLLMEngine | None = None
+model_manager: ModelManager | None = None
 
 active_requests: dict[str, WebSocket] = {}
 
@@ -69,16 +71,18 @@ def get_engine() -> VLLMEngine:
 
 @app.on_event("startup")
 async def startup():
-    global engine
+    global engine, model_manager
     model_type = os.environ.get("QWEN3_TTS_MODEL_TYPE", DEFAULT_MODEL_TYPE)
     gpu_util = float(os.environ.get("QWEN3_TTS_GPU_UTIL", "0.3"))
     device = os.environ.get("QWEN3_TTS_DEVICE", "cuda:0")
     stage_configs = os.environ.get("QWEN3_TTS_STAGE_CONFIGS", None)
     models_dir = os.environ.get("QWEN3_TTS_MODELS_DIR", DEFAULT_MODELS_DIR)
 
+    model_manager = ModelManager(models_dir=models_dir)
     engine = VLLMEngine(
         model_type=model_type,
         models_dir=models_dir,
+        model_manager=model_manager,
         gpu_memory_utilization=gpu_util,
         device=device,
         stage_configs_path=stage_configs if stage_configs else None,
@@ -304,6 +308,53 @@ def _numpy_to_pcm16_bytes(audio: np.ndarray[Any, Any]) -> bytes:
     clipped = np.clip(audio, -1.0, 1.0)
     pcm16 = (clipped * 32767).astype(np.int16)
     return pcm16.tobytes()
+
+
+def get_model_manager() -> ModelManager:
+    if model_manager is None:
+        raise HTTPException(status_code=503, detail="Model manager not initialized")
+    return model_manager
+
+
+@app.get("/v1/models/status")
+async def models_status():
+    return get_model_manager().check_all()
+
+
+@app.get("/v1/models/{model_type}/status")
+async def model_status(model_type: str):
+    if model_type not in MODEL_IDS:
+        raise HTTPException(status_code=404, detail=f"Unknown model type: {model_type}")
+    return get_model_manager().check_model(model_type)
+
+
+@app.post("/v1/models/{model_type}/download")
+async def model_download(model_type: str):
+    if model_type not in MODEL_IDS:
+        raise HTTPException(status_code=404, detail=f"Unknown model type: {model_type}")
+    return get_model_manager().download_model(model_type)
+
+
+@app.post("/v1/models/{model_type}/cancel-download")
+async def model_cancel_download(model_type: str):
+    if model_type not in MODEL_IDS:
+        raise HTTPException(status_code=404, detail=f"Unknown model type: {model_type}")
+    return get_model_manager().cancel_download(model_type)
+
+
+@app.delete("/v1/models/{model_type}")
+async def model_delete(model_type: str):
+    if model_type not in MODEL_IDS:
+        raise HTTPException(status_code=404, detail=f"Unknown model type: {model_type}")
+    deleted = get_model_manager().delete_model(model_type)
+    return {"deleted": deleted, "model_type": model_type}
+
+
+@app.get("/v1/models/{model_type}/download-status")
+async def model_download_status(model_type: str):
+    if model_type not in MODEL_IDS:
+        raise HTTPException(status_code=404, detail=f"Unknown model type: {model_type}")
+    return get_model_manager().get_download_status(model_type)
 
 
 # Mount static files for the frontend UI

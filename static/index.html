@@ -65,6 +65,86 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
 
 .form-group input[type="file"]{padding:6px 0;font-size:12px}
 .form-group input[type="file"]::file-selector-button{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:4px 10px;font-size:12px;cursor:pointer;margin-right:8px}
+
+.model-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.model-card .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.model-card .card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.model-card .card-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.model-card .card-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.model-card .card-status {
+  font-size: 12px;
+  font-weight: 500;
+}
+.model-card .card-status.complete { color: #3fb950; }
+.model-card .card-status.incomplete { color: #d29922; }
+.model-card .card-status.missing { color: var(--accent); }
+.model-card .card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.model-card .card-actions button {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  border: none;
+  transition: opacity 150ms ease;
+}
+.model-card .card-actions button:hover { opacity: .85; }
+.model-card .card-actions button.btn-dl {
+  background: var(--primary-dim);
+  color: #fff;
+}
+.model-card .card-actions button.btn-del {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.model-card .card-actions button.btn-cancel {
+  background: none;
+  border: 1px solid var(--text-muted);
+  color: var(--text-muted);
+}
+.model-card .card-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.dl-progress {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  display: none;
+}
+.dl-progress.active { display: block; }
+.dl-progress .fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 300ms ease;
+  width: 0%;
+}
 </style>
 </head>
 <body>
@@ -81,6 +161,7 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
       <button class="active" data-tab="custom_voice">预设音色</button>
       <button data-tab="voice_design">语音设计</button>
       <button data-tab="voice_clone">声音克隆</button>
+      <button data-tab="model_manage">模型管理</button>
     </nav>
     <div class="content">
       <div id="tab-custom_voice" class="tab-content active">
@@ -138,6 +219,10 @@ button.cancel:disabled{opacity:.3;cursor:not-allowed}
         </div>
       </div>
 
+      <div id="tab-model_manage" class="tab-content">
+        <!-- 3 model cards will be rendered here by JS -->
+      </div>
+
       <div class="actions">
         <button class="generate" id="btnGenerate" disabled>生成</button>
         <button class="cancel" id="btnCancel" disabled>取消</button>
@@ -171,6 +256,13 @@ let nextPlayOffset = 0;
 let currentTab = 'custom_voice';
 let speakers = [];
 let languages = [];
+
+const MODEL_NAMES = {
+  'custom_voice': '预设音色',
+  'voice_design': '语音设计',
+  'base': '声音克隆',
+};
+let downloadPollInterval = null;
 
 const LANG_ZH = {
   'Auto': '自动检测',
@@ -406,6 +498,171 @@ async function loadMetadata() {
   }
 }
 
+async function loadModelStatus() {
+  try {
+    const models = await fetchJSON('/v1/models/status');
+    renderModelCards(models);
+    
+    // Check if any model is downloading to start polling
+    const anyDownloading = models.some(m => !m.complete && !m.exists && document.querySelector(`.dl-progress.active[data-model="${m.model_type}"]`)); // Very basic check, we'll refine in pollDownloadStatus
+    
+    // Let's just start polling if there's any incomplete/downloading
+    pollDownloadStatus();
+  } catch (e) {
+    log('加载模型状态失败: ' + e.message);
+  }
+}
+
+function renderModelCards(models) {
+  const container = $('tab-model_manage');
+  container.innerHTML = '';
+  
+  // Sort models according to MODEL_NAMES keys
+  const order = ['custom_voice', 'voice_design', 'base'];
+  models.sort((a, b) => order.indexOf(a.model_type) - order.indexOf(b.model_type));
+
+  for (const m of models) {
+    const isDownloading = m.status === 'downloading'; // If backend returned a status
+    
+    const card = document.createElement('div');
+    card.className = 'model-card';
+    card.id = `model-card-${m.model_type}`;
+    
+    let statusHTML = '';
+    let actionsHTML = '';
+    
+    if (m.complete) {
+      statusHTML = `<span class="card-status complete">✓ 已下载</span>`;
+      actionsHTML = `<button class="btn-del" onclick="deleteModel('${m.model_type}')">删除</button>`;
+    } else if (m.exists) {
+      statusHTML = `<span class="card-status incomplete">⚠ 不完整 (缺 ${m.missing_files?.length || 0} 文件)</span>`;
+      actionsHTML = `
+        <button class="btn-dl" onclick="downloadModel('${m.model_type}')">继续下载</button>
+        <button class="btn-del" onclick="deleteModel('${m.model_type}')">删除</button>
+      `;
+    } else {
+      statusHTML = `<span class="card-status missing">✗ 未下载</span>`;
+      actionsHTML = `<button class="btn-dl" onclick="downloadModel('${m.model_type}')">下载</button>`;
+    }
+
+    card.innerHTML = `
+      <div class="card-header">
+        <div class="card-title">${MODEL_NAMES[m.model_type] || m.model_type}</div>
+        ${statusHTML}
+      </div>
+      <div class="card-desc">${m.description || ''}</div>
+      <div class="card-meta">
+        <span>大小: ${m.total_size_mb ? m.total_size_mb.toFixed(1) + ' MB' : '未知'}</span>
+      </div>
+      <div class="dl-progress" id="dl-prog-${m.model_type}" data-model="${m.model_type}">
+        <div class="fill" id="dl-fill-${m.model_type}"></div>
+      </div>
+      <div class="card-actions" id="dl-actions-${m.model_type}">
+        ${actionsHTML}
+      </div>
+    `;
+    
+    container.appendChild(card);
+  }
+}
+
+async function downloadModel(modelType) {
+  try {
+    const res = await fetch(`/v1/models/${modelType}/download`, { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    
+    // Update UI immediately to downloading state
+    const cardHeader = document.querySelector(`#model-card-${modelType} .card-header`);
+    if (cardHeader) {
+       cardHeader.innerHTML = `
+        <div class="card-title">${MODEL_NAMES[modelType]}</div>
+        <span class="card-status incomplete" id="dl-status-text-${modelType}">下载中 (0%)</span>
+       `;
+    }
+    
+    const actions = $(`dl-actions-${modelType}`);
+    if (actions) {
+      actions.innerHTML = `<button class="btn-cancel" onclick="cancelDownload('${modelType}')">取消</button>`;
+    }
+    
+    const prog = $(`dl-prog-${modelType}`);
+    if (prog) {
+      prog.classList.add('active');
+      $(`dl-fill-${modelType}`).style.width = '0%';
+    }
+
+    pollDownloadStatus();
+  } catch (e) {
+    log(`下载模型 ${modelType} 失败: ${e.message}`);
+  }
+}
+
+async function cancelDownload(modelType) {
+  try {
+    await fetch(`/v1/models/${modelType}/cancel-download`, { method: 'POST' });
+    log(`已请求取消下载模型: ${modelType}`);
+    setTimeout(loadModelStatus, 1000); // Reload after a bit
+  } catch (e) {
+    log(`取消下载失败: ${e.message}`);
+  }
+}
+
+async function deleteModel(modelType) {
+  if (!confirm(`确定要删除 ${MODEL_NAMES[modelType] || modelType} 模型文件吗？`)) return;
+  
+  try {
+    const res = await fetch(`/v1/models/${modelType}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    log(`已删除模型: ${modelType}`);
+    loadModelStatus();
+  } catch (e) {
+    log(`删除模型失败: ${e.message}`);
+  }
+}
+
+async function pollDownloadStatus() {
+  if (downloadPollInterval) return; // already polling
+
+  downloadPollInterval = setInterval(async () => {
+    // Only poll if tab is active, to save resources, but we need to keep tracking
+    // For simplicity, poll all models that might be downloading
+    try {
+       const order = ['custom_voice', 'voice_design', 'base'];
+       let anyDownloading = false;
+       
+       for (const modelType of order) {
+         // Check if UI says it's downloading
+         const prog = $(`dl-prog-${modelType}`);
+         if (prog && prog.classList.contains('active')) {
+           anyDownloading = true;
+           try {
+             const stat = await fetchJSON(`/v1/models/${modelType}/download-status`);
+             if (stat.download_status === 'downloading') {
+               $(`dl-fill-${modelType}`).style.width = `${stat.download_progress || 0}%`;
+               const statusText = $(`dl-status-text-${modelType}`);
+               if (statusText) statusText.textContent = `下载中 (${Math.round(stat.download_progress || 0)}%)`;
+              } else if (stat.download_status === 'complete' || stat.model_complete) {
+               // Done!
+               loadModelStatus();
+             } else if (stat.download_status === 'idle' || stat.download_status === 'error') {
+               // Stopped or error
+               loadModelStatus();
+             }
+           } catch(e) {}
+         }
+       }
+       
+       if (!anyDownloading) {
+         clearInterval(downloadPollInterval);
+         downloadPollInterval = null;
+       }
+    } catch(e) {
+      clearInterval(downloadPollInterval);
+      downloadPollInterval = null;
+    }
+  }, 2000);
+}
+
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -413,7 +670,12 @@ function switchTab(tab) {
   document.querySelectorAll('nav button').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });
+  
+  if (tab === 'model_manage') {
+    loadModelStatus();
+  }
 }
+
 
 async function readAudioFileAsBase64(input) {
   if (!input.files || !input.files[0]) return null;

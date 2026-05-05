@@ -17,6 +17,33 @@ MODELSCOPE_IDS = {
     "base": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
 }
 
+MODEL_DESCRIPTIONS = {
+    "custom_voice": "预设音色模型 — 9种精选音色，支持风格指令",
+    "voice_design": "语音设计模型 — 通过自然语言描述设计音色",
+    "base": "声音克隆基础模型 — 3秒参考音频即可克隆",
+}
+
+# Essential files that must exist for a model to be considered complete.
+# All three model variants share the same file structure.
+MODEL_ESSENTIAL_FILES = [
+    "config.json",
+    "model.safetensors",
+    "tokenizer_config.json",
+    "merges.txt",
+    "vocab.json",
+    "preprocessor_config.json",
+    "generation_config.json",
+    "speech_tokenizer/config.json",
+    "speech_tokenizer/model.safetensors",
+    "speech_tokenizer/preprocessor_config.json",
+]
+
+MODEL_OPTIONAL_FILES = [
+    "README.md",
+    ".gitattributes",
+    "speech_tokenizer/configuration.json",
+]
+
 DEFAULT_MODEL_TYPE = "custom_voice"
 DEFAULT_SAMPLE_RATE = 24000
 

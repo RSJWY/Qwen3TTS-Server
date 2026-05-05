@@ -20,7 +20,6 @@ from .config import (
     SPEAKERS,
     VALID_LANGUAGES,
     MODEL_IDS,
-    MODELSCOPE_IDS,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_MODEL_TYPE,
     DEFAULT_GPU_MEMORY_UTILIZATION,
@@ -62,6 +61,7 @@ class VLLMEngine:
         model_type: str = DEFAULT_MODEL_TYPE,
         model_id: str | None = None,
         models_dir: str = DEFAULT_MODELS_DIR,
+        model_manager: Any | None = None,
         gpu_memory_utilization: float = DEFAULT_GPU_MEMORY_UTILIZATION,
         device: str = "cuda:0",
         stage_configs_path: str | None = None,
@@ -69,6 +69,7 @@ class VLLMEngine:
         self.model_type: str = model_type
         self.model_id: str = model_id or MODEL_IDS.get(model_type, MODEL_IDS[DEFAULT_MODEL_TYPE])
         self.models_dir: str = models_dir
+        self.model_manager = model_manager
         self.gpu_memory_utilization: float = gpu_memory_utilization
         self.device: str = device
         self.stage_configs_path: str | None = stage_configs_path
@@ -79,48 +80,26 @@ class VLLMEngine:
         self._cancel_events: dict[str, asyncio.Event] = {}
 
     async def load(self) -> None:
-        """Load the AsyncOmni model."""
         if self._omni is not None:
             return
         if self._loading:
             return
         self._loading = True
         try:
-            local_path = os.path.join(self.models_dir, self.model_type)
             model_path = self.model_id
 
-            if os.path.isdir(local_path) and any(os.scandir(local_path)):
-                logger.info("Using local model at %s", local_path)
-                model_path = local_path
-            else:
-                os.makedirs(self.models_dir, exist_ok=True)
-                model_id = MODELSCOPE_IDS.get(self.model_type, self.model_id)
-                try:
-                    logger.info("Downloading model from ModelScope: %s -> %s", model_id, local_path)
-                    import importlib
-
-                    modelscope_hub = importlib.import_module("modelscope.hub")
-                    modelscope_hub.snapshot_download(
-                        model_id,
-                        cache_dir=self.models_dir,
-                        local_dir=local_path,
-                    )
+            # Try ModelManager first (supports managed downloads)
+            if self.model_manager is not None:
+                local = self.model_manager.get_local_path(self.model_type)
+                if local is not None:
+                    logger.info("Using local model via ModelManager: %s", local)
+                    model_path = local
+            # Fallback: check local dir directly
+            elif os.path.isdir(os.path.join(self.models_dir, self.model_type)):
+                local_path = os.path.join(self.models_dir, self.model_type)
+                if any(os.scandir(local_path)):
+                    logger.info("Using local model at %s", local_path)
                     model_path = local_path
-                except Exception as ms_exc:
-                    logger.info("ModelScope download failed, falling back to HuggingFace: %s", ms_exc)
-                    try:
-                        logger.info("Downloading model from HuggingFace: %s -> %s", self.model_id, local_path)
-                        import huggingface_hub
-
-                        huggingface_hub.snapshot_download(
-                            self.model_id,
-                            cache_dir=self.models_dir,
-                            local_dir=local_path,
-                        )
-                        model_path = local_path
-                    except Exception:
-                        logger.exception("Failed to download model from ModelScope and HuggingFace")
-                        raise
 
             kwargs: dict[str, Any] = {
                 "model": model_path,
