@@ -303,10 +303,9 @@ let ws = null;
 let currentRequestId = null;
 let isGenerating = false;
 let audioCtx = null;
+let workletNode = null;
 let pcmBuffers = [];
-let activeSourceNodes = new Set();
 let playStartTime = 0;
-let nextPlayOffset = 0;
 let isStreamPaused = false;
 let streamTimerId = null;
 let streamTotalDuration = 0;
@@ -364,60 +363,91 @@ function setGenerating(v) {
 }
 
 function initAudioContext() {
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+
+  const workletCode = `
+class TTSPlaybackProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.queue = [];
+    this.buf = null;
+    this.pos = 0;
+    this.playing = false;
+    this.played = 0;
+    this.port.onmessage = (e) => {
+      if (e.data && e.data.type === 'clear') {
+        this.queue = []; this.buf = null; this.pos = 0; this.played = 0;
+        if (this.playing) { this.playing = false; this.port.postMessage({type:'stopped'}); }
+        return;
+      }
+      this.queue.push(e.data);
+    };
   }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
+  process(inputs, outputs) {
+    const out = outputs[0][0];
+    for (let i = 0; i < out.length; i++) {
+      if (!this.buf || this.pos >= this.buf.length) {
+        if (this.queue.length > 0) {
+          this.buf = this.queue.shift(); this.pos = 0;
+        } else {
+          for (let j = i; j < out.length; j++) out[j] = 0;
+          if (this.playing) { this.playing = false; this.port.postMessage({type:'stopped', played:this.played}); }
+          return true;
+        }
+      }
+      out[i] = this.buf[this.pos++] / 32768;
+      this.played++;
+    }
+    if (!this.playing) { this.playing = true; this.port.postMessage({type:'started'}); }
+    return true;
   }
+}
+registerProcessor('tts-playback-processor', TTSPlaybackProcessor);`;
+
+  const blob = new Blob([workletCode], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  audioCtx.audioWorklet.addModule(url).then(() => {
+    URL.revokeObjectURL(url);
+    workletNode = new AudioWorkletNode(audioCtx, 'tts-playback-processor');
+    workletNode.connect(audioCtx.destination);
+    workletNode.port.onmessage = (e) => {
+      if (e.data.type === 'started') {
+        updatePlayerState('playing');
+        if (!streamTimerId) streamTimerId = requestAnimationFrame(updateStreamProgress);
+      } else if (e.data.type === 'stopped' && !isGenerating) {
+        updatePlayerState('completed');
+      }
+    };
+    log('AudioWorklet 初始化完成');
+  }).catch(e => {
+    log('AudioWorklet 初始化失败: ' + e.message);
+  });
 }
 
 function playPcmChunk(int16Array) {
-  if (!audioCtx) return;
+  if (!workletNode) return;
+  workletNode.port.postMessage(int16Array);
+  totalSamplesReceived += int16Array.length;
+
   const float32 = new Float32Array(int16Array.length);
-  for (let i = 0; i < int16Array.length; i++) {
-    float32[i] = int16Array[i] / 32768;
-  }
+  for (let i = 0; i < int16Array.length; i++) float32[i] = int16Array[i] / 32768;
   pcmBuffers.push(float32);
-  totalSamplesReceived += float32.length;
 
-  const buffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
-  buffer.getChannelData(0).set(float32);
+  if (totalSamplesReceived === int16Array.length) {
+    playStartTime = audioCtx.currentTime;
+    $('streamingPlayer').classList.add('active');
+    $('btnStreamPause').disabled = false;
+    $('btnStreamPause').textContent = '暂停';
+  }
 
-  const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioCtx.destination);
-  
-  activeSourceNodes.add(source);
-  source.onended = () => activeSourceNodes.delete(source);
-
-    const now = audioCtx.currentTime;
-
-    // First chunk initializes playStartTime
-    if (nextPlayOffset === 0) {
-      playStartTime = now + 0.05; // slight buffer
-      nextPlayOffset = playStartTime;
-
-      // Transition from "生成中" to "播放中"
-      updatePlayerState('playing');
-      $('streamingPlayer').classList.add('active');
-      $('btnStreamPause').disabled = false;
-      $('btnStreamPause').textContent = '暂停';
-
-      if (!streamTimerId) {
-        streamTimerId = requestAnimationFrame(updateStreamProgress);
-      }
-    }
-
-  const startTime = Math.max(now, nextPlayOffset);
-  source.start(startTime);
-  nextPlayOffset = startTime + buffer.duration;
+  const progress = Math.min(100, Math.round((totalSamplesReceived / SAMPLE_RATE) * 10));
+  $('progressFill').style.width = progress + '%';
 }
 
   function resetPlayback() {
     stopStreamingPlayback();
     pcmBuffers = [];
-    nextPlayOffset = 0;
     totalSamplesReceived = 0;
     streamTotalDuration = 0;
     isStreamPaused = false;
@@ -438,7 +468,6 @@ function playPcmChunk(int16Array) {
     $('streamPlayheadBar').style.width = '0%';
     $('streamTimeDisplay').textContent = '0.0s';
 
-    // Show player section during generation so the user sees "生成中"
     $('playerSection').style.display = 'flex';
   }
 
@@ -459,18 +488,11 @@ function updatePlayerState(state) {
       streamTimerId = null;
     }
 
-    if (audioCtx) {
-      for (const source of activeSourceNodes) {
-        try { source.stop(); } catch (e) {}
-        try { source.disconnect(); } catch (e) {}
-      }
-      activeSourceNodes.clear();
-      // Reset scheduling offset so next generation starts fresh
-      nextPlayOffset = 0;
-      // If audioCtx was paused for streaming, resume it so it's ready for next use
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-      }
+    if (workletNode) {
+      workletNode.port.postMessage({ type: 'clear' });
+    }
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
     }
   }
 
@@ -489,8 +511,7 @@ function updatePlayerState(state) {
       }
     }
 
-    // Keep animating while generating or audio still playing
-    if (isGenerating || (audioCtx.state === 'running' && activeSourceNodes.size > 0)) {
+    if (isGenerating || (audioCtx.state === 'running' && !streamStopped)) {
       streamTimerId = requestAnimationFrame(updateStreamProgress);
     }
   }
@@ -524,13 +545,11 @@ function updatePlayerState(state) {
     if (isGenerating) {
       cancel();
     } else {
-      // No generation running, just stop playback and show completed state
       isStreamPaused = false;
       $('btnStreamPause').disabled = true;
       $('btnStreamPause').textContent = '暂停';
       updatePlayerState('completed');
 
-      // Offer the WAV replay if we have buffers
       if (pcmBuffers.length > 0) {
         const wavUrl = buildWavFromBuffers();
         const player = $('audioPlayer');
@@ -627,28 +646,25 @@ async function connectWS() {
       case 'audio.done':
         setGenerating(false);
         $('progressFill').style.width = '100%';
+        streamTotalDuration = msg.total_duration;
 
-        // Remember how far streaming got before we cut it
-        const streamElapsed = audioCtx ? Math.max(0, audioCtx.currentTime - playStartTime) : 0;
-
-        // Stop AudioContext playback to avoid double audio
-        stopStreamingPlayback();
-
-        const wavUrl = buildWavFromBuffers();
-        const player = $('audioPlayer');
-        player.src = wavUrl;
-
-        // Switch UI to native player
-        $('streamingPlayer').classList.remove('active');
-        player.style.display = 'block';
-        updatePlayerState('completed');
+        $('streamingPlayer').classList.add('active');
+        updatePlayerState('playing');
         $('durationText').textContent = `${msg.total_duration.toFixed(1)}秒`;
 
-        // Auto-play the WAV from where streaming left off
-        player.currentTime = streamElapsed;
-        player.play().catch(() => {});
-
         log(`完成: ${msg.total_duration.toFixed(1)}秒, ${msg.chunks_sent} 个音频块`);
+
+        setTimeout(() => {
+          if (!isGenerating && !streamStopped) {
+            const wavUrl = buildWavFromBuffers();
+            const player = $('audioPlayer');
+            player.src = wavUrl;
+            $('streamingPlayer').classList.remove('active');
+            player.style.display = 'block';
+            updatePlayerState('completed');
+            player.play().catch(() => {});
+          }
+        }, streamTotalDuration * 1000 + 500);
         break;
       case 'error':
         setGenerating(false);
@@ -925,8 +941,12 @@ async function generate() {
   if (!text) { log('请先输入文本'); return; }
 
   initAudioContext();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
   resetPlayback();
   setGenerating(true);
+  playStartTime = audioCtx ? audioCtx.currentTime : 0;
 
   const modelTypeMap = { custom_voice: 'custom_voice', voice_design: 'voice_design', voice_clone: 'base' };
 
