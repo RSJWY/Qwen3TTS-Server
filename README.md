@@ -26,8 +26,8 @@
 python3.12 -m venv .venv
 source .venv/bin/activate
 
-# 安装 vLLM（自动处理 PyTorch CUDA 版本）
-pip install vllm --torch-backend=auto
+# 安装 vLLM（必须 0.18.x，与 vllm-omni 0.18.0 兼容）
+pip install "vllm>=0.18.0,<0.19.0" --torch-backend=auto
 
 # 安装 vLLM-Omni
 pip install vllm-omni

@@ -106,21 +106,21 @@ c7c56e1 fix: resolve basedpyright reportArgumentType in _extract_sample_rate
 |------|--------|-----|------|
 | System | 3.12.3 | 无 pip/无项目包 | 系统级 |
 | Pyenv | 3.10.12 | basedpyright, pip, setuptools | LSP 类型检查 |
-| Project .venv | 3.12.3 | 仅 pip | **待安装项目依赖** |
+| Project .venv | 3.12.3 | vllm 0.18.1, vllm-omni 0.18.0, torch 2.10.0, transformers 4.57.6 | **已安装** |
+
+### 版本兼容性说明
+
+- **vllm-omni 0.18.0 仅兼容 vllm 0.18.x**。vllm 0.19+ 移除了 `vllm.inputs.data` 模块（`TokensPrompt` 等类移至 `vllm.inputs` 直接导出），导致 `vllm_omni.patch` 和其他 5 个文件导入失败。
+- `requirements.txt` 已添加版本上限 pin：`vllm>=0.18.0,<0.19.0`
+- 当前安装：vllm 0.18.1 + vllm-omni 0.18.0 + torch 2.10.0 + CUDA 12.8
 
 ## 待完成
 
-1. **安装项目依赖到 .venv**:
-   ```bash
-   source .venv/bin/activate
-   pip install vllm --torch-backend=auto
-   pip install vllm-omni
-   pip install -r requirements.txt
-   ```
+1. ~~**安装项目依赖到 .venv**~~ — ✅ 已完成 (vllm 0.18.1, vllm-omni 0.18.0)
 
 2. **实际 GPU 测试** — 当前代码基于 vLLM-Omni 文档和源码编写，需在有 GPU 的环境验证
 
-3. **基于pyright LSP 诊断** — 剩余 13 个 `reportMissingImports` 错误在安装依赖后会消失
+3. **基于pyright LSP 诊断** — 剩余 13 个 `reportMissingImports` 错误在安装依赖后应已消失
 
 ## 参考资源
 

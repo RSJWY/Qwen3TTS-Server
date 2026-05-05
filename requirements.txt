@@ -1,6 +1,10 @@
 # Core
-vllm>=0.20.0
-vllm-omni>=0.1.0
+# IMPORTANT: vllm-omni 0.18.0 is built for vllm 0.18.x only.
+# vllm 0.19+ reorganized modules (e.g., vllm.inputs.data removed),
+# which breaks vllm-omni imports. Pin to 0.18.x until vllm-omni
+# releases a compatible version.
+vllm>=0.18.0,<0.19.0
+vllm-omni>=0.18.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 websockets>=12.0
