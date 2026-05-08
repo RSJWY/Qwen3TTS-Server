@@ -245,6 +245,8 @@ class VLLMEngine:
         sr = self.sample_rate
         last_mm: dict[str, Any] = {}
 
+        prev_chunk_count = 0
+
         try:
             async for stage_output in self._omni.generate(prompt, request_id=request_id):
                 if cancel_event.is_set():
@@ -260,13 +262,21 @@ class VLLMEngine:
                 if audio is None:
                     continue
 
+                # vLLM-Omni has two audio output modes:
+                # - Cumulative (list): each update grows the list, emit only new tail
+                # - Per-step (tensor): single tensor per iteration, emit directly
                 new_chunks: list[torch.Tensor] = []
                 if isinstance(audio, list):
-                    audio_chunks.extend(audio)
-                    new_chunks = audio
+                    new_chunks = audio[prev_chunk_count:]
+                    prev_chunk_count = len(audio)
+                    audio_chunks.extend(new_chunks)
                 else:
                     audio_chunks.append(audio)
                     new_chunks = [audio]
+                    prev_chunk_count += 1
+
+                if not new_chunks:
+                    continue
 
                 incremental = torch.cat(new_chunks, dim=-1)
                 audio_np = incremental.float().cpu().numpy().flatten()
